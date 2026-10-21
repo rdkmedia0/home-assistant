@@ -774,7 +774,10 @@ class MeshtasticChatPanel extends HTMLElement {
     return `
       :host {
         display: block;
-        height: 100%;
+        /* the panel container has no explicit height, so size against the viewport */
+        height: 100vh;
+        height: 100dvh;
+        overflow: hidden;
         background: var(--primary-background-color);
         color: var(--primary-text-color);
         font-family: var(--ha-font-family-body, Roboto, sans-serif);
