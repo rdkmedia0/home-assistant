@@ -28,6 +28,7 @@ Supported Features:
  * Device triggers & actions for automations
  * Various other service actions (e.g. request metrics, trace route)
  * Bundled meshtastic web client for manual interaction with gateway
+ * Mesh Chat sidebar panel to read and send channel and direct messages from Home Assistant
  * MQTT client proxy support (forwards messages from radio to MQTT broker)
 
 For more details, see check the [documentation](#documentation).
@@ -304,6 +305,37 @@ Inside the Meshtastic Web Client:
 
 4. Press "New Connection" - the correct hostname is already populated
 5. Press "Connect"
+
+## Mesh Chat
+
+Mesh Chat adds a sidebar panel to read and send messages through your gateways, without a second connection to the node
+and behind Home Assistant's own login.
+
+- Channels and nodes are taken from the gateway, so new nodes appear as the gateway hears them.
+- Every received channel and direct message is stored in Home Assistant, together with messages sent from the chat,
+  so the history survives restarts and is the same on every device you open Home Assistant on.
+- Sent messages show their delivery state: heard by the mesh, acknowledged by the recipient (direct messages),
+  no acknowledgement, or failed with the routing error.
+- Messages sent from the chat are also recorded in the logbook next to received ones.
+- Works on phones: the list and the conversation are shown one at a time on narrow screens.
+
+To enable it:
+
+1. Open the integration options of the gateway and expand **Mesh Chat**
+2. Turn on **Enable Chat**
+3. Reload the Home Assistant interface and open **Mesh Chat** in the sidebar
+
+Options:
+
+| Option | Default | Description |
+|---|---|---|
+| Only administrators can use the chat | on | Turn off to let every Home Assistant user read and send messages through this gateway |
+| Prefix messages with the sender's name | off | All messages sent from Home Assistant come from the gateway node. When on, the Home Assistant user's name is added, e.g. `Alex B.: on my way` |
+| Messages kept per conversation | 200 | Older messages are removed once a conversation reaches this size |
+
+Messages are limited to 200 bytes (including the prefix), which the panel counts while you type.
+History is kept in `.storage/meshtastic.chat.<entry id>` and removed when the gateway is deleted.
+Administrators can delete the stored history of a conversation from the panel; messages on devices are not affected.
 
 ## Contributions are welcome!
 

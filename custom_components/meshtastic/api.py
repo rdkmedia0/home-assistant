@@ -31,7 +31,7 @@ from .aiomeshtastic import (
     TcpConnection as AioTcpConnection,
 )
 from .aiomeshtastic.errors import MeshRoutingError, MeshtasticError
-from .aiomeshtastic.protobuf import portnums_pb2
+from .aiomeshtastic.protobuf import mesh_pb2, portnums_pb2
 from .const import (
     CONF_CONNECTION_BLUETOOTH_ADDRESS,
     CONF_CONNECTION_SERIAL_PORT,
@@ -238,6 +238,44 @@ class MeshtasticApiClient:
             raise MeshtasticApiClientError from e
         else:
             return True
+
+    async def send_text_with_ack(
+        self,
+        text: str,
+        destination_id: int = MeshInterface.BROADCAST_NUM,
+        *,
+        channel_index: int | None = None,
+        ack_timeout: float = 60,
+    ) -> tuple[int | None, str | None]:
+        """
+        Send a text message requesting an acknowledgement.
+
+        Returns (node id that sent the routing ack, routing error name). Both are None if no acknowledgement
+        arrived before the timeout. An error name of "NONE" means the packet was acknowledged without error.
+        """
+        try:
+            ack_packet = await asyncio.wait_for(
+                self._interface.send_text_message(
+                    text,
+                    destination=destination_id,
+                    want_ack=True,
+                    channel_index=channel_index,
+                ),
+                timeout=ack_timeout,
+            )
+        except TimeoutError:
+            return None, None
+        except Exception as e:
+            raise MeshtasticApiClientError(str(e)) from e
+
+        if ack_packet is None:
+            return None, None
+
+        routing = ack_packet.app_payload
+        error_name = "NONE"
+        if isinstance(routing, mesh_pb2.Routing):
+            error_name = mesh_pb2.Routing.Error.Name(routing.error_reason)
+        return ack_packet.from_id, error_name
 
     @property
     def metadata(self) -> Mapping[str, Any]:

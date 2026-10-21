@@ -33,3 +33,11 @@ keep-runtime-typing = true
 
 [lint.mccabe]
 max-complexity = 25
+
+[lint.per-file-ignores]
+"tests/**" = [
+    "S101", # asserts are how pytest checks results
+    "PLR2004", # magic values are fine in test data
+    "ANN001", # pytest fixtures are injected without annotations
+    "ANN201",
+]

@@ -39,6 +39,14 @@ from . import frontend, meshtastic_web, services
 from .api import (
     MeshtasticApiClient,
 )
+from .chat import (
+    MeshtasticChat,
+    all_chats_require_admin,
+    any_chat_loaded,
+    async_setup_chat,
+    async_unload_chat,
+    chat_enabled,
+)
 from .const import (
     CONF_CONNECTION_TCP_HOST,
     CONF_CONNECTION_TCP_PORT,
@@ -172,7 +180,35 @@ async def async_setup_entry(
     ):
         await async_setup_tcp_proxy(hass, entry)
 
+    if chat_enabled(entry):
+        await async_setup_meshtastic_chat(hass, entry)
+
     return True
+
+
+async def async_setup_meshtastic_chat(hass: HomeAssistant, entry: MeshtasticConfigEntry) -> bool:
+    try:
+        await async_setup_chat(hass, entry)
+        await frontend.async_register_chat_frontend(hass, require_admin=all_chats_require_admin(hass))
+    except:  # noqa: E722
+        LOGGER.warning("Failed to setup chat", exc_info=True)
+        return False
+    else:
+        return True
+
+
+async def async_unload_meshtastic_chat(hass: HomeAssistant, entry: MeshtasticConfigEntry) -> bool:
+    try:
+        await async_unload_chat(hass, entry)
+        if any_chat_loaded(hass):
+            await frontend.async_register_chat_frontend(hass, require_admin=all_chats_require_admin(hass))
+        else:
+            await frontend.async_unregister_chat_frontend(hass)
+    except:  # noqa: E722
+        LOGGER.warning("Failed to unload chat", exc_info=True)
+        return False
+    else:
+        return True
 
 
 async def _setup_meshtastic_devices(
@@ -373,7 +409,13 @@ async def async_unload_entry(
 
         await async_unload_tcp_proxy(hass, entry)
 
+        await async_unload_meshtastic_chat(hass, entry)
+
     return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: MeshtasticConfigEntry) -> None:
+    await MeshtasticChat.async_remove_store(hass, entry.entry_id)
 
 
 _reload_lock = asyncio.Lock()
