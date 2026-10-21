@@ -357,6 +357,7 @@ class MeshtasticChat:
         ``sent_by`` labels messages sent on behalf of someone else, e.g. by an automation or a bridge.
         """
         kind, target = parse_conversation(conversation)
+        prefix = self.prefix_for(user)
         full_text = self.compose(text, user)
         if not full_text:
             msg = "Message is empty"
@@ -387,6 +388,7 @@ class MeshtasticChat:
             "text": full_text,
             "status": MessageStatus.SENDING,
             "sent_by": sent_by if sent_by is not None else (user.name if user else None),
+            "prefix": prefix,
         }
         self._append(conversation, message)
 
@@ -441,6 +443,7 @@ class MeshtasticChat:
                         "channel": channel_index,
                     },
                     "message": message["text"],
+                    "prefix": message.get("prefix"),
                     "sent_by": message.get("sent_by"),
                     "status": str(message["status"]),
                 },

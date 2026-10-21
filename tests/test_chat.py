@@ -208,6 +208,7 @@ async def test_send_on_behalf_of_someone_else(hass: HomeAssistant, chat_setup) -
             "message_id": stored["id"],
             "to": {"node": None, "channel": 1},
             "message": "hello from telegram",
+            "prefix": None,
             "sent_by": "Telegram: Alice",
             "status": "sent",
         }
@@ -232,10 +233,14 @@ async def test_send_prefix_and_limits(hass: HomeAssistant) -> None:
     chat = await async_setup_chat(hass, entry)
     user = SimpleNamespace(name="Steve Smith", is_admin=True)
 
+    events = async_capture_events(hass, "meshtastic_chat_message_sent")
     await chat.async_send("channel:1", "on my way", user)
     await hass.async_block_till_done()
     assert client.sent[-1]["text"] == "Steve S.: on my way"
     assert chat.history("channel:1")[-1]["sent_by"] == "Steve Smith"
+    # the applied prefix is part of the event so bridges can show the sender once
+    assert events[-1].data["prefix"] == "Steve S."
+    assert events[-1].data["message"] == "Steve S.: on my way"
 
     with pytest.raises(vol.Invalid, match="longer than"):
         await chat.async_send("channel:1", "x" * MAX_TEXT_BYTES, user)
