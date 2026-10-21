@@ -10,13 +10,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.exceptions import ServiceValidationError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.meshtastic.chat import DATA_CHAT
 from custom_components.meshtastic.const import DOMAIN
 from custom_components.meshtastic.frontend import CHAT_PANEL_URL_PATH
 
-from .test_chat import GATEWAY, FakeClient
+from .test_chat import ANNA, BROADCAST, GATEWAY, FakeClient
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -157,6 +158,58 @@ async def test_options_flow_enables_chat(hass: HomeAssistant) -> None:
     assert entry.options["chat"] == {"enable": True, "require_admin": True, "prefix_sender": True, "history_size": 50}
     assert entry.entry_id in hass.data[DATA_CHAT]
     assert CHAT_PANEL_URL_PATH in hass.data["frontend_panels"]
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.usefixtures("fake_api")
+async def test_send_text_action_is_kept_in_chat_history(hass: HomeAssistant) -> None:
+    entry = _entry({"chat": {"enable": True}})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    client = entry.runtime_data.client
+    chat = hass.data[DATA_CHAT][entry.entry_id]
+
+    await hass.services.async_call(
+        DOMAIN, "send_text", {"text": "hello", "channel": "1", "sent_by": "Telegram: Alice"}, blocking=True
+    )
+    await hass.async_block_till_done()
+    message = chat.history("channel:1")[-1]
+    assert message["direction"] == "out"
+    assert message["text"] == "hello"
+    assert message["sent_by"] == "Telegram: Alice"
+    assert client.sent[-1] == {"text": "hello", "to": BROADCAST, "channel": 1, "timeout": 60}
+
+    await hass.services.async_call(DOMAIN, "send_text", {"text": "direct", "to": str(ANNA)}, blocking=True)
+    await hass.async_block_till_done()
+    assert chat.history(f"node:{ANNA}")[-1]["sent_by"] is None
+    assert client.sent[-1]["to"] == ANNA
+    assert client.sent[-1]["channel"] is None
+
+    # without a channel the primary channel is used
+    await hass.services.async_call(DOMAIN, "send_text", {"text": "primary"}, blocking=True)
+    await hass.async_block_till_done()
+    assert chat.history("channel:0")[-1]["text"] == "primary"
+
+    with pytest.raises(ServiceValidationError, match="longer than"):
+        await hass.services.async_call(DOMAIN, "send_text", {"text": "x" * 201}, blocking=True)
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.usefixtures("fake_api")
+async def test_send_text_action_without_chat(hass: HomeAssistant) -> None:
+    entry = _entry({})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    client = entry.runtime_data.client
+
+    await hass.services.async_call(DOMAIN, "send_text", {"text": "hello", "channel": "1", "ack": True}, blocking=True)
+    assert client.sent[-1] == {"text": "hello", "to": "^all", "channel": 1, "ack": True}
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()

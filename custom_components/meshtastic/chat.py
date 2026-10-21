@@ -346,7 +346,15 @@ class MeshtasticChat:
             text = f"{prefix}: {text}"
         return text
 
-    async def async_send(self, conversation: str, text: str, user: User | None = None) -> dict[str, Any]:
+    async def async_send(
+        self, conversation: str, text: str, user: User | None = None, *, sent_by: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Send a message and keep it in the history.
+
+        ``user`` is the Home Assistant user sending from the chat panel (used for the optional prefix).
+        ``sent_by`` labels messages sent on behalf of someone else, e.g. by an automation or a bridge.
+        """
         kind, target = parse_conversation(conversation)
         full_text = self.compose(text, user)
         if not full_text:
@@ -377,7 +385,7 @@ class MeshtasticChat:
             "to": target if kind == CONVERSATION_NODE else None,
             "text": full_text,
             "status": MessageStatus.SENDING,
-            "sent_by": user.name if user else None,
+            "sent_by": sent_by if sent_by is not None else (user.name if user else None),
         }
         self._append(conversation, message)
 

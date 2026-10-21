@@ -53,6 +53,16 @@ class FakeClient:
             raise self.ack
         return self.ack
 
+    async def send_text(
+        self,
+        text: str,
+        destination_id: int | str = BROADCAST,
+        *,
+        channel_index: int | None = None,
+        want_ack: bool = False,
+    ) -> None:
+        self.sent.append({"text": text, "to": destination_id, "channel": channel_index, "ack": want_ack})
+
     async def async_get_channels(self) -> list[dict[str, Any]]:
         def channel(index: int, role: str, name: str, psk: str) -> dict[str, Any]:
             settings = {"name": name, "psk": psk, "uplinkEnabled": False, "downlinkEnabled": False}
@@ -178,6 +188,15 @@ async def test_send_status(  # noqa: PLR0913
     assert client.sent[-1]["text"] == "hello"
     assert client.sent[-1]["to"] == expected_to
     assert client.sent[-1]["channel"] == expected_channel
+
+
+async def test_send_on_behalf_of_someone_else(hass: HomeAssistant, chat_setup) -> None:
+    _, chat, client = chat_setup
+
+    await chat.async_send("channel:1", "hello from telegram", sent_by="Telegram: Alice")
+    await hass.async_block_till_done()
+    assert client.sent[-1]["text"] == "hello from telegram"
+    assert chat.history("channel:1")[-1]["sent_by"] == "Telegram: Alice"
 
 
 async def test_send_prefix_and_limits(hass: HomeAssistant) -> None:

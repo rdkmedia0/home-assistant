@@ -334,6 +334,9 @@ Options:
 | Messages kept per conversation | 200 | Older messages are removed once a conversation reaches this size |
 
 Messages are limited to 200 bytes (including the prefix), which the panel counts while you type.
+While Mesh Chat is enabled for a gateway, messages sent with the `meshtastic.send_text` action are kept in the chat
+history too and show their delivery state. The optional `sent_by` field of the action labels them, so bridges and
+automations can show who wrote a message, e.g. `sent_by: "Telegram: Alice"`.
 History is kept in `.storage/meshtastic.chat.<entry id>` and removed when the gateway is deleted.
 Administrators can delete the stored history of a conversation from the panel; messages on devices are not affected.
 

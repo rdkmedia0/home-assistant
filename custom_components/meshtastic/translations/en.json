@@ -207,6 +207,10 @@
         "ack": {
           "name": "Acknowledgement",
           "description": "Request an acknowledgement"
+        },
+        "sent_by": {
+          "name": "Sent by",
+          "description": "Label shown in Mesh Chat for who sent the message, e.g. \"Telegram: Alice\". Only used when Mesh Chat is enabled for the gateway."
         }
       }
     },

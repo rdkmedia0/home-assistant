@@ -30,6 +30,7 @@ from homeassistant.helpers.selector import (
 from .aiomeshtastic import MeshInterface
 from .aiomeshtastic.interface import TelemetryType
 from .api import MeshtasticApiClient
+from .chat import DATA_CHAT, channel_conversation, node_conversation
 from .const import (
     ATTR_SERVICE_BROADCAST_CHANNEL_MESSAGE_DATA_CHANNEL,
     ATTR_SERVICE_BROADCAST_CHANNEL_MESSAGE_DATA_MESSAGE,
@@ -39,6 +40,7 @@ from .const import (
     ATTR_SERVICE_DATA_TO,
     ATTR_SERVICE_REQUEST_TELEMETRY_DATA_TYPE,
     ATTR_SERVICE_SEND_DIRECT_MESSAGE_DATA_MESSAGE,
+    ATTR_SERVICE_SEND_TEXT_DATA_SENT_BY,
     ATTR_SERVICE_SEND_TEXT_DATA_TEXT,
     DOMAIN,
     LOGGER,
@@ -60,6 +62,7 @@ SERVICE_SEND_TEXT_SCHEMA = vol.Schema(
         vol.Optional(ATTR_SERVICE_DATA_FROM): cv.string,
         vol.Optional(ATTR_SERVICE_DATA_CHANNEL): cv.string,
         vol.Required(ATTR_SERVICE_DATA_ACK, default=False): cv.boolean,
+        vol.Optional(ATTR_SERVICE_SEND_TEXT_DATA_SENT_BY): cv.string,
     }
 )
 
@@ -351,9 +354,22 @@ async def _setup_service_request_traceroute_handler(
 async def _setup_service_send_text_handler(
     hass: HomeAssistant, entry: MeshtasticConfigEntry, client: MeshtasticApiClient
 ) -> None:
-    async def handler(call: ServiceCall, to: int, channel_index: int | None) -> None:
+    async def handler(call: ServiceCall, to: int | str, channel_index: int | None) -> None:
+        text = call.data[ATTR_SERVICE_SEND_TEXT_DATA_TEXT]
+        if (chat := hass.data.get(DATA_CHAT, {}).get(entry.entry_id)) is not None:
+            # Mesh Chat is enabled for this gateway: keep the message in the chat history and track its delivery
+            if to in (MeshInterface.BROADCAST_ADDR, MeshInterface.BROADCAST_NUM):
+                conversation = channel_conversation(channel_index or 0)
+            else:
+                conversation = node_conversation(int(to[1:], 16) if isinstance(to, str) else int(to))
+            try:
+                await chat.async_send(conversation, text, sent_by=call.data.get(ATTR_SERVICE_SEND_TEXT_DATA_SENT_BY))
+            except vol.Invalid as e:
+                raise ServiceValidationError(str(e)) from e
+            return
+
         await client.send_text(
-            text=call.data[ATTR_SERVICE_SEND_TEXT_DATA_TEXT],
+            text=text,
             destination_id=to,
             channel_index=channel_index,
             want_ack=call.data[ATTR_SERVICE_DATA_ACK],
