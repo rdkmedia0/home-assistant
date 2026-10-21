@@ -309,23 +309,45 @@ Inside the Meshtastic Web Client:
 ## Mesh Chat
 
 Mesh Chat adds a sidebar panel to read and send messages through your gateways, without a second connection to the node
-and behind Home Assistant's own login.
+and behind Home Assistant's own login. Every message the gateway hears is kept, together with everything sent from
+Home Assistant, so the history is the same on every device you open Home Assistant on.
+
+<p align="center"><img src="docs/mesh-chat/desktop.png" width="800" alt="Mesh Chat on a desktop browser: channels and nodes on the left, the conversation on the right"></p>
+<p align="center"><img src="docs/mesh-chat/phone.png" width="240" alt="Mesh Chat on a phone"> &nbsp;&nbsp; <img src="docs/mesh-chat/dark.png" width="520" alt="Mesh Chat with a dark theme"></p>
 
 - Channels and nodes are taken from the gateway, so new nodes appear as the gateway hears them.
-- Every received channel and direct message is stored in Home Assistant, together with messages sent from the chat,
-  so the history survives restarts and is the same on every device you open Home Assistant on.
+- One conversation per channel and per node, with unread markers and search.
 - Sent messages show their delivery state: heard by the mesh, acknowledged by the recipient (direct messages),
   no acknowledgement, or failed with the routing error.
 - Messages sent from the chat are also recorded in the logbook next to received ones.
-- Works on phones: the list and the conversation are shown one at a time on narrow screens.
+- Works on phones: the list and the conversation are shown one at a time on narrow screens, and the panel follows
+  your Home Assistant theme.
 
-To enable it:
+### Enabling Mesh Chat
 
-1. Open the integration options of the gateway and expand **Mesh Chat**
-2. Turn on **Enable Chat**
-3. Reload the Home Assistant interface and open **Mesh Chat** in the sidebar
+1. Settings → Devices & services → **Meshtastic** → open the gateway's entry → **Configure**
+2. Expand **Mesh Chat** at the bottom, turn on **Enable Chat** and submit
+3. Reload the browser: **Mesh Chat** appears in the sidebar
 
-Options:
+The same options are offered as the last step when a new gateway is added. The panel is visible to administrators,
+and to every user once a gateway allows non-administrators (see the options below).
+
+### Using the chat
+
+| Element | Meaning |
+|---|---|
+| Lock / globe on a channel | encrypted channel / public channel (default key, anyone in range can read it) |
+| Star on a node | favourite on the gateway; favourites are listed first, then by last message or last heard |
+| Blue dot | unread messages in that conversation |
+| `✓` on a sent message | heard by the mesh (a neighbour relayed it) |
+| `✓✓` on a sent message | acknowledged by the recipient (direct messages) |
+| `?` on a sent message | no acknowledgement within a minute |
+| `!` on a sent message | failed, with the routing error as tooltip |
+| "… via Home Assistant" under a message | which Home Assistant user, automation or bridge sent it |
+| Byte counter next to the composer | Meshtastic text messages are limited to 200 bytes, prefix included |
+| Bin icon in the header | administrators can delete the stored history of a conversation; messages on devices are not affected |
+
+### Options
 
 | Option | Default | Description |
 |---|---|---|
@@ -333,15 +355,42 @@ Options:
 | Prefix messages with the sender's name | off | All messages sent from Home Assistant come from the gateway node. When on, the Home Assistant user's name is added, e.g. `Alex B.: on my way` |
 | Messages kept per conversation | 200 | Older messages are removed once a conversation reaches this size |
 
-Messages are limited to 200 bytes (including the prefix), which the panel counts while you type.
-While Mesh Chat is enabled for a gateway, messages sent with the `meshtastic.send_text` action are kept in the chat
-history too and show their delivery state. The optional `sent_by` field of the action labels them, so bridges and
-automations can show who wrote a message, e.g. `sent_by: "Telegram: Alice"`.
-Every message sent through the chat (from the panel or the action) fires a `meshtastic_chat_message_sent` event once
-its delivery is settled, with the target, text, `sent_by` label and status, so automations and bridges can mirror
-messages sent from Home Assistant to other chats.
 History is kept in `.storage/meshtastic.chat.<entry id>` and removed when the gateway is deleted.
-Administrators can delete the stored history of a conversation from the panel; messages on devices are not affected.
+
+### Automations and other chats
+
+While Mesh Chat is enabled for a gateway, messages sent with the `meshtastic.send_text` action are kept in the chat
+history too and show their delivery state. The optional `sent_by` field labels them:
+
+```yaml
+action: meshtastic.send_text
+data:
+  channel: "1"
+  text: "Garage door opened"
+  sent_by: "Garage automation"
+```
+
+Every message sent through the chat (from the panel or the action) fires a `meshtastic_chat_message_sent` event once
+its delivery is settled, with the target, the text, the applied name prefix, the `sent_by` label and the status.
+Together with the `meshtastic_api_text_message` event for received messages this is all that is needed to mirror a
+channel to another chat:
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: meshtastic_chat_message_sent
+    event_data:
+      to:
+        channel: 1
+actions:
+  - action: notify.mobile_app_phone
+    data:
+      message: "{{ trigger.event.data.sent_by or 'Gateway' }}: {{ trigger.event.data.message }}"
+```
+
+Ready-made bridges built on these hooks exist for Telegram and for WhatsApp through a self-hosted WAHA instance:
+[meshtastic-telegram-bridge](https://github.com/rdkmedia0/meshtastic-telegram-bridge) and
+[meshtastic-waha-bridge](https://github.com/rdkmedia0/meshtastic-waha-bridge).
 
 ## Contributions are welcome!
 
