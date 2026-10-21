@@ -388,9 +388,8 @@ actions:
       message: "{{ trigger.event.data.sent_by or 'Gateway' }}: {{ trigger.event.data.message }}"
 ```
 
-Ready-made bridges built on these hooks exist for Telegram and for WhatsApp through a self-hosted WAHA instance:
-[meshtastic-telegram-bridge](https://github.com/rdkmedia0/meshtastic-telegram-bridge) and
-[meshtastic-waha-bridge](https://github.com/rdkmedia0/meshtastic-waha-bridge).
+A ready-made bridge built on these hooks exists for Telegram:
+[meshtastic-telegram-bridge](https://github.com/rdkmedia0/meshtastic-telegram-bridge).
 
 ## Contributions are welcome!
 
