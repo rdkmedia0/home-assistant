@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 import voluptuous as vol
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_capture_events
 
 from custom_components.meshtastic.aiomeshtastic.interface import MeshNode
 from custom_components.meshtastic.api import EVENT_MESHTASTIC_API_TEXT_MESSAGE, MeshtasticApiClientError
@@ -191,12 +191,39 @@ async def test_send_status(  # noqa: PLR0913
 
 
 async def test_send_on_behalf_of_someone_else(hass: HomeAssistant, chat_setup) -> None:
-    _, chat, client = chat_setup
+    entry, chat, client = chat_setup
+    events = async_capture_events(hass, "meshtastic_chat_message_sent")
 
     await chat.async_send("channel:1", "hello from telegram", sent_by="Telegram: Alice")
     await hass.async_block_till_done()
     assert client.sent[-1]["text"] == "hello from telegram"
-    assert chat.history("channel:1")[-1]["sent_by"] == "Telegram: Alice"
+    stored = chat.history("channel:1")[-1]
+    assert stored["sent_by"] == "Telegram: Alice"
+
+    # sent messages are announced once their delivery is settled, so bridges can mirror them
+    assert [e.data for e in events] == [
+        {
+            "config_entry_id": entry.entry_id,
+            "gateway": GATEWAY,
+            "message_id": stored["id"],
+            "to": {"node": None, "channel": 1},
+            "message": "hello from telegram",
+            "sent_by": "Telegram: Alice",
+            "status": "sent",
+        }
+    ]
+
+    client.ack = MeshtasticApiClientError("boom")
+    await chat.async_send(f"node:{ANNA}", "lost")
+    await hass.async_block_till_done()
+    assert len(events) == 1  # failed sends are not announced
+
+    client.ack = (ANNA, "NONE")
+    await chat.async_send(f"node:{ANNA}", "direct")
+    await hass.async_block_till_done()
+    assert events[-1].data["to"] == {"node": ANNA, "channel": None}
+    assert events[-1].data["sent_by"] is None
+    assert events[-1].data["status"] == "delivered"
 
 
 async def test_send_prefix_and_limits(hass: HomeAssistant) -> None:

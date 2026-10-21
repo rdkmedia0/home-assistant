@@ -337,6 +337,9 @@ Messages are limited to 200 bytes (including the prefix), which the panel counts
 While Mesh Chat is enabled for a gateway, messages sent with the `meshtastic.send_text` action are kept in the chat
 history too and show their delivery state. The optional `sent_by` field of the action labels them, so bridges and
 automations can show who wrote a message, e.g. `sent_by: "Telegram: Alice"`.
+Every message sent through the chat (from the panel or the action) fires a `meshtastic_chat_message_sent` event once
+its delivery is settled, with the target, text, `sent_by` label and status, so automations and bridges can mirror
+messages sent from Home Assistant to other chats.
 History is kept in `.storage/meshtastic.chat.<entry id>` and removed when the gateway is deleted.
 Administrators can delete the stored history of a conversation from the panel; messages on devices are not affected.
 

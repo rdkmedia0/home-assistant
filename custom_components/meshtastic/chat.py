@@ -42,6 +42,7 @@ from .const import (
     CONF_OPTION_CHAT_REQUIRE_ADMIN,
     CONF_OPTION_CHAT_REQUIRE_ADMIN_DEFAULT,
     DOMAIN,
+    EVENT_MESHTASTIC_CHAT_MESSAGE_SENT,
     EVENT_MESHTASTIC_DOMAIN_MESSAGE_LOG,
     EVENT_MESHTASTIC_MESSAGE_LOG_EVENT_DATA_ATTR_FROM_NAME,
     EVENT_MESHTASTIC_MESSAGE_LOG_EVENT_DATA_ATTR_MESSAGE,
@@ -429,6 +430,21 @@ class MeshtasticChat:
 
         if message["status"] != MessageStatus.FAILED:
             self._log_sent_message(message, destination, channel_index)
+            self.hass.bus.async_fire(
+                EVENT_MESHTASTIC_CHAT_MESSAGE_SENT,
+                {
+                    ATTR_EVENT_MESHTASTIC_API_CONFIG_ENTRY_ID: self.entry.entry_id,
+                    "gateway": self.gateway_id,
+                    "message_id": message["id"],
+                    "to": {
+                        "node": destination if channel_index is None else None,
+                        "channel": channel_index,
+                    },
+                    "message": message["text"],
+                    "sent_by": message.get("sent_by"),
+                    "status": str(message["status"]),
+                },
+            )
 
     def _log_sent_message(self, message: dict[str, Any], destination: int, channel_index: int | None) -> None:
         """Record messages sent from the chat in the logbook, next to the received ones."""

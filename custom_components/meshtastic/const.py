@@ -131,4 +131,7 @@ class MeshtasticDomainMessageLogEventData(TypedDict):
 # Event used for logbook
 EVENT_MESHTASTIC_DOMAIN_MESSAGE_LOG: EventType[MeshtasticDomainMessageLogEventData] = EventType(f"{DOMAIN}_message_log")
 
+# fired by Mesh Chat for every message sent from Home Assistant once its delivery is settled
+EVENT_MESHTASTIC_CHAT_MESSAGE_SENT: Final = f"{DOMAIN}_chat_message_sent"
+
 URL_BASE = "/meshtastic"
