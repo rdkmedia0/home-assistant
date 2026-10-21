@@ -188,6 +188,14 @@ async def test_send_text_action_is_kept_in_chat_history(hass: HomeAssistant) -> 
     assert client.sent[-1]["to"] == ANNA
     assert client.sent[-1]["channel"] is None
 
+    # a direct message on an explicit channel keeps that channel
+    await hass.services.async_call(
+        DOMAIN, "send_text", {"text": "direct on 2", "to": str(ANNA), "channel": "2"}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert client.sent[-1] == {"text": "direct on 2", "to": ANNA, "channel": 2, "timeout": 60}
+    assert chat.history(f"node:{ANNA}")[-1]["text"] == "direct on 2"
+
     # without a channel the primary channel is used
     await hass.services.async_call(DOMAIN, "send_text", {"text": "primary"}, blocking=True)
     await hass.async_block_till_done()

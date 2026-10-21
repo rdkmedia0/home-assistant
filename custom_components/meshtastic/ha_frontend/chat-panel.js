@@ -60,6 +60,7 @@ class MeshtasticChatPanel extends HTMLElement {
     this._unsubscribe = null;
     this._initialized = false;
     this._loadError = null;
+    this._onReady = null;
   }
 
   set hass(hass) {
@@ -92,15 +93,36 @@ class MeshtasticChatPanel extends HTMLElement {
       this._subscribe();
       this._loadGateways();
     }
+    this._addReadyListener();
     this._startRefresh();
   }
 
   disconnectedCallback() {
     this._stopRefresh();
+    this._removeReadyListener();
     if (this._unsubscribe) {
       this._unsubscribe.then((unsub) => unsub()).catch(() => {});
       this._unsubscribe = null;
     }
+  }
+
+  // reload after the websocket reconnected; registered only while the element is in the document
+  _addReadyListener() {
+    if (this._onReady || !this._hass || !this._initialized) return;
+    this._onReady = () => {
+      this._loadGateways();
+      this._reloadOpenConversation();
+    };
+    this._hass.connection.addEventListener("ready", this._onReady);
+  }
+
+  _removeReadyListener() {
+    if (!this._onReady) return;
+    const connection = this._hass && this._hass.connection;
+    if (connection && typeof connection.removeEventListener === "function") {
+      connection.removeEventListener("ready", this._onReady);
+    }
+    this._onReady = null;
   }
 
   // ---------- data ----------
@@ -111,10 +133,7 @@ class MeshtasticChatPanel extends HTMLElement {
     await this._loadGateways();
     this._subscribe();
     this._startRefresh();
-    this._hass.connection.addEventListener("ready", () => {
-      this._loadGateways();
-      this._reloadOpenConversation();
-    });
+    if (this.isConnected) this._addReadyListener();
   }
 
   _startRefresh() {
@@ -167,7 +186,8 @@ class MeshtasticChatPanel extends HTMLElement {
     const key = `${update.entry_id}|${update.conversation}`;
 
     if (update.kind === "cleared") {
-      this._messages.delete(key);
+      // the history is known to be empty now; an empty list keeps the thread rendered instead of "Loading…"
+      this._messages.set(key, []);
       if (gateway) delete gateway.conversations[update.conversation];
       this._render();
       return;

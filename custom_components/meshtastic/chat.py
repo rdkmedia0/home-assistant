@@ -348,13 +348,21 @@ class MeshtasticChat:
         return text
 
     async def async_send(
-        self, conversation: str, text: str, user: User | None = None, *, sent_by: str | None = None
+        self,
+        conversation: str,
+        text: str,
+        user: User | None = None,
+        *,
+        sent_by: str | None = None,
+        channel_index: int | None = None,
     ) -> dict[str, Any]:
         """
         Send a message and keep it in the history.
 
         ``user`` is the Home Assistant user sending from the chat panel (used for the optional prefix).
         ``sent_by`` labels messages sent on behalf of someone else, e.g. by an automation or a bridge.
+        ``channel_index`` optionally selects the channel a direct message is sent on; by default the client
+        decides (the node's PKI channel or the primary channel).
         """
         kind, target = parse_conversation(conversation)
         prefix = self.prefix_for(user)
@@ -371,7 +379,6 @@ class MeshtasticChat:
             channel_index = target
         else:
             destination = target
-            channel_index = None
 
         gateway_id = self.gateway_id or 0
         long_name, short_name, user_id = self._node_names(gateway_id)

@@ -363,7 +363,12 @@ async def _setup_service_send_text_handler(
             else:
                 conversation = node_conversation(int(to[1:], 16) if isinstance(to, str) else int(to))
             try:
-                await chat.async_send(conversation, text, sent_by=call.data.get(ATTR_SERVICE_SEND_TEXT_DATA_SENT_BY))
+                await chat.async_send(
+                    conversation,
+                    text,
+                    sent_by=call.data.get(ATTR_SERVICE_SEND_TEXT_DATA_SENT_BY),
+                    channel_index=channel_index,
+                )
             except vol.Invalid as e:
                 raise ServiceValidationError(str(e)) from e
             return
