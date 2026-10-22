@@ -1197,29 +1197,76 @@ class MeshtasticChatPanel extends HTMLElement {
     this._mapCard = null;
   }
 
-  // Home Assistant ships a map card (built on its ha-map element) that is loaded on demand; use it when the
-  // helpers are available, otherwise the pane keeps the "show on map" buttons only.
-  async _mountMap(container, entities, details) {
+  // Home Assistant's map element (ha-map, built on Leaflet) is loaded on demand by its map card. Creating a map
+  // card loads it; afterwards the element can be used directly with the node trackers as entities and the other
+  // nodes, which have no entity, as markers of our own. Without the helpers the pane keeps the buttons only.
+  async _mountMap(container, entities, details, points = []) {
     this._mapCard = null;
-    if (!entities.length || typeof window.loadCardHelpers !== "function") return;
+    if ((!entities.length && !points.length) || typeof window.loadCardHelpers !== "function") return;
     try {
       const helpers = await window.loadCardHelpers();
-      const card = helpers.createCardElement({
+      const tall = container.classList.contains("tall");
+      const cardConfig = {
         type: "map",
-        entities,
         auto_fit: true,
         default_zoom: 13,
-        aspect_ratio: container.classList.contains("tall") ? "4:3" : "16:9",
+        aspect_ratio: tall ? "4:3" : "16:9",
         theme_mode: "auto",
-      });
+      };
+      if (entities.length) cardConfig.entities = entities;
+      else cardConfig.geo_location_sources = ["meshtastic"]; // a valid config that shows nothing
+      const card = helpers.createCardElement(cardConfig);
       card.hass = this._hass;
+      let element = card;
+      if (points.length) {
+        await Promise.race([customElements.whenDefined("ha-map"), new Promise((resolve) => window.setTimeout(resolve, 5000))]);
+        if (customElements.get("ha-map")) {
+          const map = document.createElement("ha-map");
+          map.hass = this._hass;
+          map.entities = entities;
+          map.autoFit = false;
+          map.themeMode = "auto";
+          map.style.height = tall ? "300px" : "200px";
+          element = map;
+        }
+      }
       if (this._details !== details || !container.isConnected) return;
-      container.replaceChildren(card);
+      container.replaceChildren(element);
       container.classList.add("mounted");
-      this._mapCard = card;
+      this._mapCard = element;
+      if (element !== card) this._addMapMarkers(element, entities, points, details);
     } catch (e) {
       // the map stays a link; nothing else depends on it
     }
+  }
+
+  // markers for nodes without a device tracker, drawn with the Leaflet instance of ha-map once it is up
+  async _addMapMarkers(map, entities, points, details) {
+    for (let i = 0; i < 25 && !(map.leafletMap && map.Leaflet); i++) {
+      await new Promise((resolve) => window.setTimeout(resolve, 200));
+    }
+    if (!map.leafletMap || !map.Leaflet || this._details !== details || !map.isConnected) return;
+    const L = map.Leaflet;
+    const bounds = [];
+    for (const p of points) {
+      const icon = L.divIcon({
+        html: `<div title="${escapeHtml(p.long_name)}" style="width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font:600 11px/1 Roboto,sans-serif;color:#fff;background:hsl(${avatarHue(
+          p.num
+        )},45%,45%);border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);cursor:pointer">${escapeHtml(String(p.short_name || "?").slice(0, 4))}</div>`,
+        iconSize: [36, 36],
+        iconAnchor: [18, 18],
+        className: "",
+      });
+      const marker = L.marker([p.latitude, p.longitude], { icon, title: p.long_name }).addTo(map.leafletMap);
+      marker.on("click", () => this._openDetails("node", p.num));
+      bounds.push([p.latitude, p.longitude]);
+    }
+    for (const entityId of entities) {
+      const state = this._hass.states && this._hass.states[entityId];
+      const attributes = state && state.attributes;
+      if (attributes && isSet(attributes.latitude) && isSet(attributes.longitude)) bounds.push([attributes.latitude, attributes.longitude]);
+    }
+    if (bounds.length) map.leafletMap.fitBounds(bounds, { padding: [24, 24], maxZoom: 14 });
   }
 
   // ---------- rendering ----------
@@ -1786,8 +1833,9 @@ class MeshtasticChatPanel extends HTMLElement {
 
     const mapContainer = el.querySelector(".map");
     if (mapContainer) {
-      const entities = JSON.parse(mapContainer.dataset.entities);
-      this._mountMap(mapContainer, entities, details);
+      const entities = JSON.parse(mapContainer.dataset.entities || "[]");
+      const points = JSON.parse(mapContainer.dataset.points || "[]");
+      this._mountMap(mapContainer, entities, details, points);
     } else {
       this._unmountMap();
     }
@@ -1795,8 +1843,11 @@ class MeshtasticChatPanel extends HTMLElement {
 
   _mapBody(data) {
     const entities = data.nodes.map((n) => n.device_tracker).filter(Boolean);
-    const canEmbed = typeof window.loadCardHelpers === "function" && entities.length > 0;
-    const missing = data.nodes.filter((n) => !n.device_tracker).length;
+    const points = data.nodes
+      .filter((n) => !n.device_tracker)
+      .map((n) => ({ num: n.num, short_name: n.short_name, long_name: n.long_name, latitude: n.position.latitude, longitude: n.position.longitude }));
+    const canEmbed = typeof window.loadCardHelpers === "function" && data.nodes.length > 0;
+    const missing = points.length;
     const rows = data.nodes
       .map((n) => {
         const p = n.position;
@@ -1811,7 +1862,7 @@ class MeshtasticChatPanel extends HTMLElement {
             <span class="item-text">
               <span class="item-title">
                 <span class="name">${escapeHtml(n.long_name)}</span>
-                ${n.device_tracker ? "" : `<span class="badge">not on the map</span>`}
+                ${n.device_tracker ? `<span class="badge">tracker</span>` : ""}
               </span>
               <span class="preview">${escapeHtml(parts.join(" · "))}</span>
             </span>
@@ -1819,20 +1870,14 @@ class MeshtasticChatPanel extends HTMLElement {
       })
       .join("");
     return `
-      ${entities.length ? `<div class="map tall" data-entities="${escapeHtml(JSON.stringify(entities))}"></div>` : ""}
-      ${
-        canEmbed
-          ? ""
-          : `<p class="hint">${
-              entities.length
-                ? "The map could not be embedded in this view."
-                : "None of the nodes with a position has a device tracker yet, so there is nothing to put on the map."
-            }</p>`
-      }
+      ${data.nodes.length ? `<div class="map tall" data-entities="${escapeHtml(JSON.stringify(entities))}" data-points="${escapeHtml(JSON.stringify(points))}"></div>` : ""}
+      ${canEmbed ? "" : `<p class="hint">The map could not be embedded in this view.</p>`}
       <div class="actions"><button class="chip-button" data-action="navigate" data-href="/map"><ha-icon icon="mdi:map"></ha-icon>Open the Map panel</button></div>
       ${
         missing
-          ? `<p class="hint">${missing} node${missing === 1 ? " has" : "s have"} a position but no device tracker: only nodes selected in the integration options are placed on the map.</p>`
+          ? `<p class="hint">Every node with a position is drawn from the gateway's node database; click a marker for its details. ${missing} of them ${
+              missing === 1 ? "has" : "have"
+            } no device tracker (not selected in the integration options), so Home Assistant's own Map panel shows only the ${entities.length} marked "tracker".</p>`
           : ""
       }
       <h3>Nodes with a position</h3>
@@ -1916,8 +1961,10 @@ class MeshtasticChatPanel extends HTMLElement {
           isSet(p.distance) && !node.is_gateway ? `${formatDistance(p.distance)} · ${p.bearing}° ${compassPoint(p.bearing)}` : null,
         ],
       ];
-      const entities = [node.device_tracker, node.gateway_device_tracker].filter((e) => e && e !== node.device_tracker || e === node.device_tracker);
-      const unique = [...new Set(entities.filter(Boolean))];
+      const unique = [...new Set([node.device_tracker, node.gateway_device_tracker].filter(Boolean))];
+      const points = node.device_tracker
+        ? []
+        : [{ num: node.num, short_name: node.short_name, long_name: node.long_name, latitude: p.latitude, longitude: p.longitude }];
       const buttons = [];
       if (node.device_tracker) {
         buttons.push(
@@ -1927,12 +1974,12 @@ class MeshtasticChatPanel extends HTMLElement {
       buttons.push(`<button class="chip-button" data-action="navigate" data-href="/map"><ha-icon icon="mdi:map"></ha-icon>Open the map</button>`);
       position = `
         ${this._section("Position", rows)}
-        ${unique.length ? `<div class="map" data-entities="${escapeHtml(JSON.stringify(unique))}"></div>` : ""}
+        <div class="map" data-entities="${escapeHtml(JSON.stringify(unique))}" data-points="${escapeHtml(JSON.stringify(points))}"></div>
         <div class="actions">${buttons.join("")}</div>
         ${
           node.device_tracker
             ? ""
-            : `<p class="hint">Positions on the map need the node's device tracker: add the node in the integration options.</p>`
+            : `<p class="hint">This node has no device tracker (it is not selected in the integration options), so Home Assistant's own Map panel and automations do not know its position.</p>`
         }`;
     } else {
       position = `${this._section("Position", [["Position", "not received yet"]])}`;
