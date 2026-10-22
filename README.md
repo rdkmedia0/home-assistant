@@ -339,6 +339,7 @@ and to every user once a gateway allows non-administrators (see the options belo
 | Lock / globe on a channel | encrypted channel / public channel (default key, anyone in range can read it) |
 | Star on a node | favourite on the gateway; favourites are listed first, then by last message or last heard |
 | Blue dot | unread messages in that conversation |
+| Number next to the time | how many messages of that conversation are stored in Home Assistant |
 | `✓` on a sent message | heard by the mesh (a neighbour relayed it) |
 | `✓✓` on a sent message | acknowledged by the recipient (direct messages) |
 | `?` on a sent message | no acknowledgement within a minute |
