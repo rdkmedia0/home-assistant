@@ -5,7 +5,7 @@
 // Mesh Chat panel: read and send Meshtastic channel and direct messages through a gateway.
 // Plain web component without external dependencies, styled with Home Assistant theme variables.
 
-const PANEL_BUILD = "v2.15"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
+const PANEL_BUILD = "v2.16"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
 const STORAGE_KEY = "meshtastic-chat";
 const HISTORY_LIMIT = 200;
 const TARGET_REFRESH_MS = 120 * 1000;
@@ -46,6 +46,22 @@ const PRECISION_BITS = [0, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32];
 const CHANNEL_NAME_MAX_BYTES = 11;
 // nodes without a device tracker are shown to ha-map as states under this prefix (they never reach Home Assistant)
 const MAP_ENTITY_PREFIX = "device_tracker.meshtastic_chat_node_";
+// "1.3 dB · −103 dBm · 1 hop" for a received message; empty when the gateway reported nothing
+const signalText = (m) => {
+  const parts = [];
+  if (isSet(m.snr)) parts.push(`${formatNumber(m.snr, 1)} dB`);
+  if (isSet(m.rssi)) parts.push(`${formatNumber(m.rssi, 0)} dBm`);
+  if (isSet(m.hops)) parts.push(m.hops === 0 ? "direct" : `${m.hops} hop${m.hops === 1 ? "" : "s"}`);
+  return parts.join(" · ");
+};
+const signalTitle = (m) => {
+  const parts = [];
+  if (isSet(m.snr)) parts.push(`signal to noise ${formatNumber(m.snr, 1)} dB`);
+  if (isSet(m.rssi)) parts.push(`signal strength ${formatNumber(m.rssi, 0)} dBm`);
+  if (isSet(m.hops)) parts.push(m.hops === 0 ? "heard directly" : `relayed over ${m.hops} hop${m.hops === 1 ? "" : "s"}`);
+  return parts.join(", ");
+};
+
 const precisionToMeters = (bits) => (bits && bits >= 2 ? Math.round(5976446 / 2 ** (bits - 2)) : null);
 const precisionLabel = (bits) => {
   if (!bits) return "Off – no positions on this channel";
@@ -1979,6 +1995,7 @@ class MeshtasticChatPanel extends HTMLElement {
       }
 
       const sentBy = outgoing && m.sent_by ? `<span class="via">${escapeHtml(m.sent_by)} via Home Assistant</span>` : "";
+      const signal = !outgoing && signalText(m) ? `<span class="via signal" title="${escapeHtml(signalTitle(m))}">${escapeHtml(signalText(m))}</span>` : "";
       const author =
         !outgoing && !continued
           ? `<button class="author" data-action="dm" data-conversation="node:${Number(m.from)}" title="Send a direct message">${escapeHtml(
@@ -1992,7 +2009,7 @@ class MeshtasticChatPanel extends HTMLElement {
           <div class="bubble ${m.status === "failed" ? "failed" : ""}">
             ${author}
             <div class="text">${escapeHtml(m.text)}</div>
-            <div class="footer">${sentBy}${footer}</div>
+            <div class="footer">${sentBy}${signal}${footer}</div>
           </div>
         </div>`;
     }
@@ -2122,6 +2139,17 @@ class MeshtasticChatPanel extends HTMLElement {
     ]);
 
     const g = node.gateway_info;
+    const gauges = g ? this._gatewayGauges(node, g) : "";
+    const a = node.activity;
+    const messages = a
+      ? this._section("Messages", [
+          [
+            "From this node",
+            a.total ? `${a.total} stored (${a.direct} direct, ${a.channels} on channels)` : "none stored yet",
+          ],
+          ["Last message", a.last_ts ? `${this._formatDateTime(a.last_ts)} (${this._formatAgo(a.last_ts)} ago)` : null],
+        ])
+      : "";
     const gatewaySection = g
       ? this._section("Gateway", [
           ["Home Assistant entry", g.title],
@@ -2231,7 +2259,48 @@ class MeshtasticChatPanel extends HTMLElement {
       <p class="hint">Requests go over the mesh and can take up to a minute; the reply updates the values above.</p>
       ${["telemetry", "position", "traceroute"].map((key) => this._requestResult(key, details.results[key], node)).join("")}`;
 
-    return identity + gatewaySection + radio + metrics + position + security + homeAssistant + actions;
+    return gauges + identity + gatewaySection + radio + messages + metrics + position + security + homeAssistant + actions;
+  }
+
+  // ring gauges with the gateway's key numbers; the colour follows the usual thresholds
+  _gatewayGauges(node, g) {
+    const level = (value, warn, bad, inverted = false) => {
+      if (!isSet(value)) return "";
+      const v = inverted ? 100 - value : value;
+      return v >= bad ? "bad" : v >= warn ? "warn" : "good";
+    };
+    const ring = (fraction, text, label, cls, title) => {
+      const r = 20;
+      const c = 2 * Math.PI * r;
+      const f = Math.max(0, Math.min(1, fraction ?? 0));
+      return `
+        <div class="gauge ${cls}" title="${escapeHtml(title || label)}">
+          <svg viewBox="0 0 52 52" aria-hidden="true">
+            <circle class="track" cx="26" cy="26" r="${r}"></circle>
+            <circle class="value" cx="26" cy="26" r="${r}" stroke-dasharray="${(f * c).toFixed(1)} ${c.toFixed(1)}"></circle>
+          </svg>
+          <span class="gauge-text">${escapeHtml(text)}</span>
+          <span class="gauge-label">${escapeHtml(label)}</span>
+        </div>`;
+    };
+    const util = node.channel_utilization;
+    const air = node.air_util_tx;
+    const battery = node.battery_level;
+    const plugged = isSet(battery) && battery > 100;
+    return `
+      <div class="gauges">
+        ${ring(isSet(util) ? util / 100 : 0, isSet(util) ? `${formatNumber(util, 0)}%` : "–", "Channel", level(util, 25, 50), "Channel utilisation")}
+        ${ring(isSet(air) ? air / 100 : 0, isSet(air) ? `${formatNumber(air, 1)}%` : "–", "TX air", level(air, 5, 10), "Air utilisation (transmit)")}
+        ${ring(
+          plugged ? 1 : isSet(battery) ? battery / 100 : 0,
+          plugged ? "AC" : isSet(battery) ? `${battery}%` : "–",
+          "Battery",
+          plugged ? "good" : level(battery, 50, 80, true),
+          plugged ? "Plugged in" : "Battery"
+        )}
+        ${ring(1, String(g.nodes_known), "Nodes", "neutral", "Nodes known to the gateway")}
+        ${ring(1, String(g.messages_today), "Today", "neutral", `Messages today (${g.messages_total} stored)`)}
+      </div>`;
   }
 
   _requestResult(key, result, node) {
@@ -2700,6 +2769,19 @@ class MeshtasticChatPanel extends HTMLElement {
         opacity: 0.75;
       }
       .footer .via { margin-right: auto; padding-right: 8px; }
+      .footer .signal { white-space: nowrap; }
+      .gauges { display: flex; justify-content: space-between; gap: 6px; margin: 16px 0 4px; }
+      .gauge { display: flex; flex-direction: column; align-items: center; position: relative; min-width: 0; flex: 1; }
+      .gauge svg { width: 52px; height: 52px; transform: rotate(-90deg); }
+      .gauge circle { fill: none; stroke-width: 5; }
+      .gauge .track { stroke: var(--divider-color); }
+      .gauge .value { stroke: var(--primary-color); stroke-linecap: round; }
+      .gauge.good .value { stroke: var(--success-color, #43a047); }
+      .gauge.warn .value { stroke: var(--warning-color, #ffa600); }
+      .gauge.bad .value { stroke: var(--error-color, #db4437); }
+      .gauge.neutral .value { stroke: var(--secondary-text-color); opacity: 0.5; }
+      .gauge-text { position: absolute; top: 17px; font-size: 12px; font-weight: 600; }
+      .gauge-label { margin-top: 4px; font-size: 11px; color: var(--secondary-text-color); white-space: nowrap; }
       .footer .status { --mdc-icon-size: 14px; }
       .older {
         display: block;

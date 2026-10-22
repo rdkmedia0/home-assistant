@@ -25,6 +25,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 from homeassistant.util import location as location_util
 from homeassistant.util.hass_dict import HassKey
 
@@ -372,6 +373,9 @@ class MeshtasticChat:
                 "from_short": short_name,
                 "text": data.get("message", ""),
                 "status": MessageStatus.RECEIVED,
+                "snr": data.get("rx_snr"),
+                "rssi": data.get("rx_rssi"),
+                "hops": data.get("hops"),
             },
         )
 
@@ -515,6 +519,7 @@ class MeshtasticChat:
             "gateway_position": gateway_marker,
             "is_gateway": node_id == self.gateway_id,
             "gateway_info": gateway_info,
+            "activity": self.node_activity(node_id) if node_id != self.gateway_id else None,
             "conversation": node_conversation(node_id),
         }
 
@@ -539,6 +544,8 @@ class MeshtasticChat:
             "mqtt_enabled": bool(mqtt.get("enabled", False)),
             "channels": len(channels),
             "nodes_known": nodes_known,
+            "messages_today": self.messages_since(dt_util.start_of_local_day().timestamp()),
+            "messages_total": sum(len(m) for m in self._conversations.values()),
             "title": self.entry.title,
         }
 
@@ -599,6 +606,26 @@ class MeshtasticChat:
 
     async def async_set_favorite(self, node_id: int, *, favorite: bool) -> None:
         await self.entry.runtime_data.client.async_set_favorite(node_id, favorite=favorite)
+
+    def node_activity(self, node_id: int) -> dict[str, Any]:
+        """Count the stored messages from a node, in its direct messages and on the channels."""
+        direct = 0
+        on_channels = 0
+        last_ts = None
+        for conversation, messages in self._conversations.items():
+            for message in messages:
+                if message["direction"] != "in" or message.get("from") != node_id:
+                    continue
+                if conversation.startswith(CONVERSATION_NODE):
+                    direct += 1
+                else:
+                    on_channels += 1
+                if last_ts is None or message["ts"] > last_ts:
+                    last_ts = message["ts"]
+        return {"direct": direct, "channels": on_channels, "total": direct + on_channels, "last_ts": last_ts}
+
+    def messages_since(self, since: float) -> int:
+        return sum(1 for messages in self._conversations.values() for m in messages if m["ts"] >= since)
 
     def channel_activity(self, index: int) -> dict[str, Any]:
         """Summarise the stored history of a channel: message counts and the nodes heard on it."""

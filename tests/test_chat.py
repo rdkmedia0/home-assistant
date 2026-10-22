@@ -222,7 +222,14 @@ def _make_entry(hass: HomeAssistant, client: FakeClient, **chat_options: Any) ->
 
 
 def _fire_text(  # noqa: PLR0913
-    hass: HomeAssistant, entry: MockConfigEntry, *, to_node=None, channel=None, message_id=1, text="hi"
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    *,
+    to_node=None,
+    channel=None,
+    message_id=1,
+    text="hi",
+    signal: dict[str, Any] | None = None,
 ) -> None:
     hass.bus.async_fire(
         EVENT_MESHTASTIC_API_TEXT_MESSAGE,
@@ -234,6 +241,7 @@ def _fire_text(  # noqa: PLR0913
                 "to": {"node": to_node, "channel": channel},
                 "gateway": GATEWAY,
                 "message": text,
+                **(signal or {}),
             },
             "message_id": message_id,
         },
@@ -278,6 +286,18 @@ async def test_receive_channel_and_direct_messages(hass: HomeAssistant, chat_set
     direct = chat.history(f"node:{ANNA}")
     assert [m["text"] for m in direct] == ["direct"]
     assert set(chat.summaries()) == {"channel:1", f"node:{ANNA}"}
+    # messages without signal data (older events, bridges) store None
+    assert (channel[0]["snr"], channel[0]["rssi"], channel[0]["hops"]) == (None, None, None)
+
+    _fire_text(hass, entry, channel=1, message_id=13, text="heard", signal={"rx_snr": 1.25, "rx_rssi": -103, "hops": 1})
+    await hass.async_block_till_done()
+    heard = chat.history("channel:1")[-1]
+    assert (heard["snr"], heard["rssi"], heard["hops"]) == (1.25, -103, 1)
+
+    activity = chat.node_activity(ANNA)
+    assert activity == {"direct": 1, "channels": 2, "total": 3, "last_ts": heard["ts"]}
+    assert (await chat.async_node_details(ANNA))["activity"] == activity
+    assert chat.node_activity(0x12345678) == {"direct": 0, "channels": 0, "total": 0, "last_ts": None}
 
 
 @pytest.mark.parametrize(
@@ -976,8 +996,15 @@ async def test_gateway_details_and_map(hass: HomeAssistant, chat_setup) -> None:
         "mqtt_enabled": True,
         "channels": 2,
         "nodes_known": 2,
+        "messages_today": 0,
+        "messages_total": 0,
         "title": "Home Gateway",
     }
+    assert details["activity"] is None
+    _fire_text(hass, entry, channel=1, message_id=1, text="today")
+    await hass.async_block_till_done()
+    info = (await chat.async_node_details(GATEWAY))["gateway_info"]
+    assert (info["messages_today"], info["messages_total"]) == (1, 1)
     assert (await chat.async_node_details(ANNA))["gateway_info"] is None
 
     nodes = await chat.async_map_nodes()
@@ -996,3 +1023,33 @@ async def test_websocket_map(hass: HomeAssistant, hass_ws_client, chat_setup) ->
     response = await ws.receive_json()
     assert response["success"]
     assert [n["short_name"] for n in response["result"]["nodes"]] == ["4904", "ANNA"]
+
+
+async def test_api_text_message_event_carries_the_signal() -> None:
+    client = MeshtasticApiClient.__new__(MeshtasticApiClient)
+    client._hass = MagicMock()  # noqa: SLF001
+    client._config_entry_id = "e1"  # noqa: SLF001
+    client._interface = SimpleNamespace(connected_node=lambda: {"num": GATEWAY})  # noqa: SLF001
+    node = MeshNode(id=ANNA, user_id="!a1b2c3d4", short_name="ANNA", long_name="Anna Hiking")
+
+    def packet(**mesh: Any) -> SimpleNamespace:
+        return SimpleNamespace(
+            from_id=ANNA,
+            to_id=BROADCAST,
+            channel_index=1,
+            app_payload="hello",
+            mesh_packet=SimpleNamespace(
+                **{"id": 42, "rx_snr": 0.0, "rx_rssi": 0, "hop_start": 0, "hop_limit": 0, **mesh}
+            ),
+        )
+
+    await client._on_text_message(node, packet(rx_snr=1.25, rx_rssi=-103, hop_start=3, hop_limit=2))  # noqa: SLF001
+    event = client._hass.bus.async_fire.call_args.args[1]  # noqa: SLF001
+    assert event["data"]["to"] == {"node": None, "channel": 1}
+    assert (event["data"]["rx_snr"], event["data"]["rx_rssi"], event["data"]["hops"]) == (1.25, -103, 1)
+    assert event["message_id"] == 42
+
+    # a packet without signal info (e.g. relayed through MQTT) reports None rather than zeros
+    await client._on_text_message(node, packet())  # noqa: SLF001
+    event = client._hass.bus.async_fire.call_args.args[1]  # noqa: SLF001
+    assert (event["data"]["rx_snr"], event["data"]["rx_rssi"], event["data"]["hops"]) == (None, None, None)

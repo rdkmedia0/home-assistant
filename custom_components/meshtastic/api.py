@@ -315,6 +315,10 @@ class MeshtasticApiClient:
             to_channel = None
             to_node = packet.to_id
 
+        mesh_packet = packet.mesh_packet
+        hops = None
+        if mesh_packet is not None and mesh_packet.hop_start:
+            hops = max(0, mesh_packet.hop_start - mesh_packet.hop_limit)
         event_data = self._build_event_data(
             node.id,
             {
@@ -322,6 +326,10 @@ class MeshtasticApiClient:
                 "to": {"node": to_node, "channel": to_channel},
                 "gateway": self.get_own_node()["num"],
                 "message": packet.app_payload,
+                # how the gateway heard the packet; None when the firmware did not report it
+                "rx_snr": mesh_packet.rx_snr if mesh_packet is not None and mesh_packet.rx_snr else None,
+                "rx_rssi": mesh_packet.rx_rssi if mesh_packet is not None and mesh_packet.rx_rssi else None,
+                "hops": hops,
             },
         )
 
