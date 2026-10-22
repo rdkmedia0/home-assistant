@@ -421,6 +421,9 @@ Assistant log with the user's name.
 
 <p align="center"><img src="docs/mesh-chat/map.png" width="800" alt="Map view: full-size map with the chat's own node markers"></p>
 
+A node that shares its position with limited precision gets a circle of that accuracy around its marker (exact
+positions, and ones coarser than 50 km, get none), on the full map and in the details map.
+
 Nodes with a `device_tracker` entity (the nodes selected in the integration options) are the ones Home Assistant's
 own Map panel and automations know as well; the chat map does not need them.
 

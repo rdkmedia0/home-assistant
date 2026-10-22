@@ -555,6 +555,7 @@ async def test_node_details(hass: HomeAssistant, chat_setup) -> None:
         "long_name": "Home Gateway",
         "latitude": 47.0,
         "longitude": 8.0,
+        "accuracy": None,
     }
     assert details["is_gateway"] is False
     position = details["position"]
@@ -1009,6 +1010,8 @@ async def test_gateway_details_and_map(hass: HomeAssistant, chat_setup) -> None:
     assert nodes["nodes_known"] == 2
     assert [(n["num"], n["is_gateway"]) for n in nodes["nodes"]] == [(GATEWAY, True), (ANNA, False)]
     assert nodes["nodes"][1]["position"]["distance"] == pytest.approx(1112, abs=2)
+    # the map draws the accuracy of a shared position as a circle around the marker
+    assert nodes["nodes"][1]["position"]["accuracy"] == 2918
 
 
 async def test_websocket_map(hass: HomeAssistant, hass_ws_client, chat_setup) -> None:

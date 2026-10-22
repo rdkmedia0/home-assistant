@@ -58,6 +58,9 @@ const KEY_CHOICES = [
 ];
 const PRECISION_BITS = [0, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32];
 // nodes without a device tracker are shown to ha-map as states under this prefix (they never reach Home Assistant)
+// a position shared with less precision is drawn as a circle of its accuracy around the marker; beyond this radius
+// the circle says little and would zoom the map out to the continent
+const MAP_MAX_ACCURACY_M = 50000;
 const MAP_ENTITY_PREFIX = "device_tracker.meshtastic_chat_node_";
 // "1.3 dB · −103 dBm · 1 hop" for a received message; empty when the gateway reported nothing
 const signalText = (m) => {
@@ -991,6 +994,7 @@ class MeshtasticChatPanel extends HTMLElement {
       long_name: n.long_name,
       latitude: n.position.latitude,
       longitude: n.position.longitude,
+      accuracy: n.position.accuracy,
     }));
   }
 
@@ -1049,9 +1053,11 @@ class MeshtasticChatPanel extends HTMLElement {
         markers.set(p.num, element);
       }
       element.classList.toggle("focused", p.num === focus);
+      const radius = this._mapRadius(p);
       return {
         id: `node-${p.num}`,
         location: [p.latitude, p.longitude],
+        ...(radius ? { radius } : {}),
         title: p.long_name,
         element,
         elementSize: [36, 36],
@@ -1061,6 +1067,11 @@ class MeshtasticChatPanel extends HTMLElement {
         fit: focus === null,
       };
     });
+  }
+
+  // meters around the marker where the node's real position can be; none for exact or very coarse positions
+  _mapRadius(point) {
+    return point.accuracy > 0 && point.accuracy <= MAP_MAX_ACCURACY_M ? point.accuracy : null;
   }
 
   // a click on a node marker (the map fires it from inside its own shadow root)
@@ -1522,6 +1533,7 @@ class MeshtasticChatPanel extends HTMLElement {
           latitude: p.latitude,
           longitude: p.longitude,
           source_type: "gps",
+          gps_accuracy: this._mapRadius(p) || 0,
           icon: "mdi:radio-tower",
         },
       };
@@ -2298,7 +2310,9 @@ class MeshtasticChatPanel extends HTMLElement {
   _nodeMapPoints(node) {
     const p = node && node.position;
     if (!p) return [];
-    const points = [{ num: node.num, short_name: node.short_name, long_name: node.long_name, latitude: p.latitude, longitude: p.longitude }];
+    const points = [
+      { num: node.num, short_name: node.short_name, long_name: node.long_name, latitude: p.latitude, longitude: p.longitude, accuracy: p.accuracy },
+    ];
     if (node.gateway_position && !node.is_gateway) points.push(node.gateway_position);
     return points;
   }

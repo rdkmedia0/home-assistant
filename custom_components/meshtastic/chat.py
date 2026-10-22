@@ -509,6 +509,7 @@ class MeshtasticChat:
                 "long_name": gateway_fields["long_name"],
                 "latitude": gateway_position["latitude"],
                 "longitude": gateway_position["longitude"],
+                "accuracy": precision_to_meters(gateway_position.get("precisionBits")),
             }
         return {
             "num": node_id,
