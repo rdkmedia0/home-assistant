@@ -7,13 +7,22 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import voluptuous as vol
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_capture_events
 
-from custom_components.meshtastic.aiomeshtastic.interface import MeshNode
-from custom_components.meshtastic.api import EVENT_MESHTASTIC_API_TEXT_MESSAGE, MeshtasticApiClientError
+from custom_components.meshtastic.aiomeshtastic.errors import MeshtasticError
+from custom_components.meshtastic.aiomeshtastic.interface import MeshInterface, MeshNode
+from custom_components.meshtastic.aiomeshtastic.protobuf import mesh_pb2
+from custom_components.meshtastic.api import (
+    EVENT_MESHTASTIC_API_TEXT_MESSAGE,
+    MeshtasticApiClient,
+    MeshtasticApiClientError,
+)
 from custom_components.meshtastic.chat import (
     DATA_CHAT,
     MAX_TEXT_BYTES,
@@ -21,6 +30,8 @@ from custom_components.meshtastic.chat import (
     MessageStatus,
     async_setup_chat,
     async_unload_chat,
+    bearing,
+    precision_to_meters,
     short_user_name,
 )
 from custom_components.meshtastic.const import DOMAIN
@@ -30,6 +41,7 @@ if TYPE_CHECKING:
 
 GATEWAY = 0x4904
 ANNA = 0xA1B2C3D4
+RELAY = 0x11111111
 BROADCAST = 0xFFFFFFFF
 
 
@@ -37,6 +49,10 @@ class FakeClient:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
         self.ack: tuple[int | None, str | None] | Exception = (GATEWAY, "NONE")
+        self.favorites: set[int] = {ANNA}
+        self.favorite_calls: list[tuple[int, bool]] = []
+        self.requests: list[tuple[str, int, str | None]] = []
+        self.request_error: Exception | None = None
 
     def get_node_info(self, node_id: int) -> MeshNode | None:
         if node_id == ANNA:
@@ -76,15 +92,70 @@ class FakeClient:
 
     async def async_get_all_nodes(self) -> dict[int, dict[str, Any]]:
         return {
-            GATEWAY: {"num": GATEWAY, "user": {"id": "!00004904", "longName": "Home Gateway", "shortName": "4904"}},
+            GATEWAY: {
+                "num": GATEWAY,
+                "user": {"id": "!00004904", "longName": "Home Gateway", "shortName": "4904", "hwModel": "HELTEC_V3"},
+                "position": {"latitudeI": 470000000, "longitudeI": 80000000, "latitude": 47.0, "longitude": 8.0},
+            },
             ANNA: {
                 "num": ANNA,
-                "user": {"id": "!a1b2c3d4", "longName": "Anna Hiking", "shortName": "ANNA", "publicKey": "abc"},
+                "user": {
+                    "id": "!a1b2c3d4",
+                    "longName": "Anna Hiking",
+                    "shortName": "ANNA",
+                    "publicKey": "abc",
+                    "hwModel": "T_ECHO",
+                    "role": "CLIENT",
+                },
                 "lastHeard": 1700000000,
                 "hopsAway": 1,
-                "isFavorite": True,
+                "snr": 6.5,
+                "isFavorite": ANNA in self.favorites,
+                "deviceMetrics": {"batteryLevel": 81, "voltage": 3.9, "channelUtilization": 4.2, "uptimeSeconds": 3600},
+                "position": {
+                    "latitudeI": 470100000,
+                    "longitudeI": 80000000,
+                    "latitude": 47.01,
+                    "longitude": 8.0,
+                    "altitude": 500,
+                    "time": 1700000000,
+                    "precisionBits": 13,
+                },
             },
         }
+
+    async def async_get_node_local_config(self) -> dict[str, Any]:
+        return {"lora": {"region": "EU_868", "modemPreset": "LONG_FAST", "hopLimit": 3}}
+
+    async def async_get_node_module_config(self) -> dict[str, Any]:
+        return {"mqtt": {"enabled": True, "address": "mqtt.example.org"}, "storeForward": {"enabled": False}}
+
+    async def async_set_favorite(self, node: int, *, favorite: bool) -> None:
+        self.favorite_calls.append((node, favorite))
+        if isinstance(self.request_error, Exception):
+            raise self.request_error
+        if favorite:
+            self.favorites.add(node)
+        else:
+            self.favorites.discard(node)
+
+    async def request_telemetry(self, node: int, telemetry_type: Any) -> dict[str, Any]:
+        self.requests.append(("telemetry", node, str(telemetry_type)))
+        if isinstance(self.request_error, Exception):
+            raise self.request_error
+        return {"deviceMetrics": {"batteryLevel": 77, "voltage": 3.8}}
+
+    async def request_position(self, node: int) -> dict[str, Any]:
+        self.requests.append(("position", node, None))
+        if isinstance(self.request_error, Exception):
+            raise self.request_error
+        return {"latitudeI": 470200000, "longitudeI": 80100000, "time": 1700000100}
+
+    async def request_traceroute(self, node: int) -> dict[str, Any]:
+        self.requests.append(("traceroute", node, None))
+        if isinstance(self.request_error, Exception):
+            raise self.request_error
+        return {"route": [RELAY], "snrTowards": [24, -8], "routeBack": [], "snrBack": [-10]}
 
 
 def _make_entry(hass: HomeAssistant, client: FakeClient, **chat_options: Any) -> MockConfigEntry:
@@ -382,3 +453,256 @@ async def test_websocket_non_admin_allowed(hass: HomeAssistant, hass_ws_client, 
     response = await ws.receive_json()
     assert response["error"]["code"] == "unauthorized"
     await async_unload_chat(hass, entry)
+
+
+def test_position_helpers() -> None:
+    assert precision_to_meters(None) is None
+    assert precision_to_meters(0) is None
+    assert precision_to_meters(13) == 2918
+    assert precision_to_meters(24) == 1
+    assert precision_to_meters(32) == 0  # full precision
+    assert bearing(47.0, 8.0, 47.01, 8.0) == pytest.approx(0.0)
+    assert bearing(47.0, 8.0, 47.0, 8.01) == pytest.approx(90.0, abs=0.1)
+    assert bearing(47.0, 8.0, 46.99, 8.0) == pytest.approx(180.0)
+
+
+async def test_node_details(hass: HomeAssistant, chat_setup) -> None:
+    entry, chat, _ = chat_setup
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, str(ANNA))}, name="Anna Hiking"
+    )
+    tracker = er.async_get(hass).async_get_or_create(
+        "device_tracker",
+        DOMAIN,
+        f"{entry.entry_id}_device_tracker_{ANNA}_node_position",
+        suggested_object_id="meshtastic_anna_position",
+        config_entry=entry,
+        device_id=device.id,
+    )
+
+    details = await chat.async_node_details(ANNA)
+    assert details["long_name"] == "Anna Hiking"
+    assert details["user_id"] == "!a1b2c3d4"
+    assert details["hw_model"] == "T_ECHO"
+    assert details["role"] == "CLIENT"
+    assert details["favorite"] is True
+    assert details["has_public_key"] is True
+    assert details["battery_level"] == 81
+    assert details["uptime_seconds"] == 3600
+    assert details["device_id"] == device.id
+    assert details["device_tracker"] == tracker.entity_id
+    assert details["gateway_device_tracker"] is None
+    assert details["is_gateway"] is False
+    position = details["position"]
+    assert position["latitude"] == 47.01
+    assert position["altitude"] == 500
+    assert position["accuracy"] == 2918
+    assert position["distance"] == pytest.approx(1112, abs=2)
+    assert position["bearing"] == 0
+
+    gateway = await chat.async_node_details(GATEWAY)
+    assert gateway["is_gateway"] is True
+    assert gateway["position"]["distance"] == 0
+
+    with pytest.raises(vol.Invalid, match="Unknown node"):
+        await chat.async_node_details(0x22222222)
+
+
+async def test_node_requests(chat_setup) -> None:
+    _, chat, client = chat_setup
+
+    telemetry = await chat.async_node_request(ANNA, "telemetry")
+    assert telemetry == {"deviceMetrics": {"batteryLevel": 77, "voltage": 3.8}}
+    assert client.requests[-1] == ("telemetry", ANNA, "device_metrics")
+    await chat.async_node_request(ANNA, "telemetry", "environment_metrics")
+    assert client.requests[-1] == ("telemetry", ANNA, "environment_metrics")
+
+    position = await chat.async_node_request(ANNA, "position")
+    assert position["latitude"] == pytest.approx(47.02)
+    assert position["longitude"] == pytest.approx(8.01)
+
+    traceroute = await chat.async_node_request(ANNA, "traceroute")
+    assert traceroute["route"] == [RELAY]
+    # every hop gets a name so the panel can draw the route
+    assert traceroute["nodes"][str(RELAY)]["long_name"] == "Meshtastic 1111"
+    assert traceroute["nodes"][str(ANNA)]["short_name"] == "ANNA"
+    assert traceroute["nodes"][str(GATEWAY)]["long_name"] == "Home Gateway"
+
+    with pytest.raises(vol.Invalid, match="Unknown request"):
+        await chat.async_node_request(ANNA, "reboot")
+
+
+async def test_channel_details_and_activity(hass: HomeAssistant, chat_setup) -> None:
+    entry, chat, _ = chat_setup
+    _fire_text(hass, entry, channel=1, message_id=1, text="first")
+    _fire_text(hass, entry, channel=1, message_id=2, text="second")
+    await hass.async_block_till_done()
+    await chat.async_send("channel:1", "reply")
+    await hass.async_block_till_done()
+
+    details = await chat.async_channel_details(1)
+    assert details["name"] == "SOSPrivate"
+    assert details["role"] == "SECONDARY"
+    assert details["public"] is False
+    assert details["key_bytes"] == 20
+    assert details["uplink_enabled"] is False
+    assert details["gateway"] == {
+        "region": "EU_868",
+        "modem_preset": "LONG_FAST",
+        "hop_limit": 3,
+        "mqtt_enabled": True,
+        "mqtt_address": "mqtt.example.org",
+        "mqtt_encryption_enabled": False,
+        "store_forward_enabled": False,
+    }
+    activity = details["activity"]
+    assert (activity["messages"], activity["received"], activity["sent"]) == (3, 2, 1)
+    assert activity["first_ts"] <= activity["last_ts"]
+    assert [(n["num"], n["count"], n["long_name"]) for n in activity["nodes"]] == [(ANNA, 2, "Anna Hiking")]
+
+    primary = await chat.async_channel_details(0)
+    assert primary["name"] == "Primary"
+    assert primary["public"] is True
+    assert primary["key_bytes"] == 1
+    assert primary["activity"]["messages"] == 0
+
+    with pytest.raises(vol.Invalid, match="Unknown channel"):
+        await chat.async_channel_details(2)  # disabled
+
+
+async def test_websocket_details_and_favorites(hass: HomeAssistant, hass_ws_client, chat_setup) -> None:
+    entry, _, client = chat_setup
+    ws = await hass_ws_client(hass)
+
+    await ws.send_json({"id": 1, "type": "meshtastic/chat/gateways"})
+    gateway = (await ws.receive_json())["result"][0]
+    assert gateway["can_favorite"] is True
+    assert gateway["nodes"][0]["hw_model"] == "T_ECHO"
+    assert gateway["nodes"][0]["battery_level"] == 81
+    assert gateway["nodes"][0]["has_position"] is True
+
+    await ws.send_json({"id": 2, "type": "meshtastic/chat/node", "entry_id": entry.entry_id, "node_id": ANNA})
+    response = await ws.receive_json()
+    assert response["success"]
+    assert response["result"]["long_name"] == "Anna Hiking"
+    assert response["result"]["position"]["bearing"] == 0
+
+    await ws.send_json({"id": 3, "type": "meshtastic/chat/node", "entry_id": entry.entry_id, "node_id": 12345})
+    response = await ws.receive_json()
+    assert response["error"]["code"] == "not_found"
+
+    await ws.send_json(
+        {
+            "id": 4,
+            "type": "meshtastic/chat/node/request",
+            "entry_id": entry.entry_id,
+            "node_id": ANNA,
+            "request": "traceroute",
+        }
+    )
+    response = await ws.receive_json()
+    assert response["success"]
+    assert response["result"]["request"] == "traceroute"
+    assert response["result"]["result"]["route"] == [RELAY]
+    assert response["result"]["node"]["long_name"] == "Anna Hiking"
+
+    client.request_error = MeshtasticApiClientError("No response for device_metrics")
+    await ws.send_json(
+        {
+            "id": 5,
+            "type": "meshtastic/chat/node/request",
+            "entry_id": entry.entry_id,
+            "node_id": ANNA,
+            "request": "telemetry",
+            "telemetry_type": "device_metrics",
+        }
+    )
+    response = await ws.receive_json()
+    assert not response["success"]
+    assert response["error"]["message"] == "No response for device_metrics"
+    client.request_error = None
+
+    await ws.send_json(
+        {"id": 6, "type": "meshtastic/chat/favorite", "entry_id": entry.entry_id, "node_id": ANNA, "favorite": False}
+    )
+    response = await ws.receive_json()
+    assert response["success"]
+    assert response["result"] == {"node_id": ANNA, "favorite": False}
+    assert client.favorite_calls == [(ANNA, False)]
+
+    await ws.send_json({"id": 7, "type": "meshtastic/chat/gateways"})
+    gateway = (await ws.receive_json())["result"][0]
+    assert gateway["nodes"][0]["favorite"] is False
+
+    client.request_error = MeshtasticApiClientError("No acknowledgement received")
+    await ws.send_json(
+        {"id": 8, "type": "meshtastic/chat/favorite", "entry_id": entry.entry_id, "node_id": ANNA, "favorite": True}
+    )
+    response = await ws.receive_json()
+    assert not response["success"]
+    assert response["error"]["message"] == "No acknowledgement received"
+
+    await ws.send_json({"id": 9, "type": "meshtastic/chat/channel", "entry_id": entry.entry_id, "index": 0})
+    response = await ws.receive_json()
+    assert response["success"]
+    assert response["result"]["name"] == "Primary"
+
+    await ws.send_json({"id": 10, "type": "meshtastic/chat/channel", "entry_id": entry.entry_id, "index": 7})
+    response = await ws.receive_json()
+    assert response["error"]["code"] == "not_found"
+
+
+async def test_websocket_favorite_requires_admin(
+    hass: HomeAssistant, hass_ws_client, hass_read_only_access_token
+) -> None:
+    client = FakeClient()
+    entry = _make_entry(hass, client, require_admin=False)
+    await async_setup_chat(hass, entry)
+    ws = await hass_ws_client(hass, hass_read_only_access_token)
+
+    await ws.send_json({"id": 1, "type": "meshtastic/chat/gateways"})
+    result = (await ws.receive_json())["result"]
+    assert result[0]["can_favorite"] is False
+
+    # details and requests follow the gateway's "require admin" option, favourites are always admin only
+    await ws.send_json({"id": 2, "type": "meshtastic/chat/node", "entry_id": entry.entry_id, "node_id": ANNA})
+    assert (await ws.receive_json())["success"]
+
+    await ws.send_json(
+        {"id": 3, "type": "meshtastic/chat/favorite", "entry_id": entry.entry_id, "node_id": ANNA, "favorite": False}
+    )
+    response = await ws.receive_json()
+    assert response["error"]["code"] == "unauthorized"
+    assert client.favorite_calls == []
+    await async_unload_chat(hass, entry)
+
+
+async def test_interface_set_favorite_node() -> None:
+    interface = MeshInterface(connection=MagicMock())
+    interface._connected_node_info = mesh_pb2.MyNodeInfo(my_node_num=GATEWAY)  # noqa: SLF001
+    interface._node_database[ANNA] = {  # noqa: SLF001
+        "num": ANNA,
+        "user": {"id": "!a1b2c3d4", "longName": "Anna Hiking", "shortName": "ANNA"},
+    }
+    interface.send_admin_message_await_response = AsyncMock()
+
+    await interface.set_favorite_node(ANNA, favorite=True)
+    call = interface.send_admin_message_await_response.call_args
+    assert call.kwargs["node"] is None
+    assert call.kwargs["expect_response"] is False
+    assert call.kwargs["message"].set_favorite_node == ANNA
+    assert interface.nodes()[ANNA]["isFavorite"] is True
+
+    await interface.set_favorite_node(ANNA, favorite=False)
+    message = interface.send_admin_message_await_response.call_args.kwargs["message"]
+    assert message.WhichOneof("payload_variant") == "remove_favorite_node"
+    assert message.remove_favorite_node == ANNA
+    assert interface.nodes()[ANNA]["isFavorite"] is False
+
+
+async def test_api_client_set_favorite_wraps_errors() -> None:
+    client = MeshtasticApiClient.__new__(MeshtasticApiClient)
+    client._interface = SimpleNamespace(set_favorite_node=AsyncMock(side_effect=MeshtasticError("no ack")))  # noqa: SLF001
+    with pytest.raises(MeshtasticApiClientError, match="no ack"):
+        await client.async_set_favorite(ANNA, favorite=True)
+    client._interface.set_favorite_node.assert_awaited_once_with(ANNA, favorite=True)  # noqa: SLF001

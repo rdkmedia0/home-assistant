@@ -417,3 +417,10 @@ class MeshtasticApiClient:
             return self._message_to_dict(response)
         except MeshtasticError as e:
             raise MeshtasticApiClientError(str(e)) from e
+
+    async def async_set_favorite(self, node: int, *, favorite: bool) -> None:
+        """Star or unstar a node in the gateway's node database."""
+        try:
+            await self._interface.set_favorite_node(node, favorite=favorite)
+        except MeshtasticError as e:
+            raise MeshtasticApiClientError(str(e)) from e

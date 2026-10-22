@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import math
 import time
 import uuid
 from enum import StrEnum
@@ -16,15 +17,18 @@ from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
+from homeassistant.components.device_tracker import DOMAIN as DEVICE_TRACKER_DOMAIN
 from homeassistant.const import ATTR_DEVICE_ID, ATTR_ENTITY_ID
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.storage import Store
+from homeassistant.util import location as location_util
 from homeassistant.util.hass_dict import HassKey
 
 from .aiomeshtastic import MeshInterface
+from .aiomeshtastic.interface import TelemetryType
 from .api import (
     ATTR_EVENT_MESHTASTIC_API_CONFIG_ENTRY_ID,
     ATTR_EVENT_MESHTASTIC_API_DATA,
@@ -127,14 +131,68 @@ def short_user_name(name: str | None) -> str | None:
     return parts[0]
 
 
+def _psk_bytes(psk: str | None) -> int | None:
+    """Return the length of a channel key in bytes; None if the key cannot be decoded."""
+    if not psk:
+        return 0
+    try:
+        return len(base64.b64decode(psk))
+    except (binascii.Error, ValueError):
+        return None
+
+
 def _is_public_channel(psk: str | None) -> bool:
     # no key, or a one byte "well known" key (e.g. the default AQ==) means anyone can read the channel
-    if not psk:
-        return True
-    try:
-        return len(base64.b64decode(psk)) <= 1
-    except (binascii.Error, ValueError):
-        return False
+    length = _psk_bytes(psk)
+    return length is not None and length <= 1
+
+
+def precision_to_meters(precision_bits: int | None) -> int | None:
+    """Convert the number of position bits a node (or channel) shares to a precision in meters."""
+    # https://github.com/meshtastic/Meshtastic-Android/issues/893: 2 bits ~ 5976 km, each extra bit halves it
+    if not precision_bits or precision_bits < 2:  # noqa: PLR2004
+        return None
+    # 32 bits is the full precision of the device, reported as exact (0 m)
+    return round(5976446 / 2 ** (precision_bits - 2))
+
+
+def bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Compute the initial bearing in degrees from the first to the second coordinate."""
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    delta = math.radians(lon2 - lon1)
+    x = math.sin(delta) * math.cos(phi2)
+    y = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(delta)
+    return (math.degrees(math.atan2(x, y)) + 360) % 360
+
+
+def _position_summary(position: Mapping[str, Any], origin: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Summarise a position with the distance and bearing from the gateway (``origin``) when both are known."""
+    latitude = position.get("latitude")
+    longitude = position.get("longitude")
+    if latitude is None or longitude is None:
+        return None
+    summary: dict[str, Any] = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "altitude": position.get("altitude"),
+        "time": position.get("time"),
+        "precision_bits": position.get("precisionBits"),
+        "accuracy": precision_to_meters(position.get("precisionBits")),
+        "distance": None,
+        "bearing": None,
+    }
+    origin_latitude = origin.get("latitude")
+    origin_longitude = origin.get("longitude")
+    if origin_latitude is not None and origin_longitude is not None:
+        summary["distance"] = location_util.distance(origin_latitude, origin_longitude, latitude, longitude)
+        summary["bearing"] = round(bearing(origin_latitude, origin_longitude, latitude, longitude))
+    return summary
+
+
+NODE_REQUEST_TELEMETRY = "telemetry"
+NODE_REQUEST_POSITION = "position"
+NODE_REQUEST_TRACEROUTE = "traceroute"
+NODE_REQUESTS = (NODE_REQUEST_TELEMETRY, NODE_REQUEST_POSITION, NODE_REQUEST_TRACEROUTE)
 
 
 class MeshtasticChat:
@@ -326,15 +384,170 @@ class MeshtasticChat:
                     "user_id": user_id,
                     "long_name": user.get("longName") or user_id,
                     "short_name": user.get("shortName") or user_id[-4:],
+                    "hw_model": user.get("hwModel"),
+                    "role": user.get("role"),
                     "last_heard": node.get("lastHeard"),
                     "hops_away": node.get("hopsAway"),
                     "snr": node.get("snr"),
+                    "via_mqtt": bool(node.get("viaMqtt", False)),
+                    "battery_level": node.get("deviceMetrics", {}).get("batteryLevel"),
+                    "has_position": "latitude" in node.get("position", {}),
                     "favorite": bool(node.get("isFavorite", False)),
                     "has_public_key": bool(user.get("publicKey")),
                     "conversation": node_conversation(node_id),
                 }
             )
         return {"channels": channels, "nodes": nodes}
+
+    def _device_tracker_entity_id(self, node_id: int) -> str | None:
+        unique_id = f"{self.entry.entry_id}_{DEVICE_TRACKER_DOMAIN}_{node_id}_node_position"
+        return er.async_get(self.hass).async_get_entity_id(DEVICE_TRACKER_DOMAIN, DOMAIN, unique_id)
+
+    def _device_id(self, node_id: int) -> str | None:
+        device = dr.async_get(self.hass).async_get_device(identifiers={(DOMAIN, str(node_id))})
+        return device.id if device else None
+
+    async def async_node_details(self, node_id: int) -> dict[str, Any]:
+        """Describe a node with everything the gateway knows about it, for the details view of the panel."""
+        nodes = await self.entry.runtime_data.client.async_get_all_nodes()
+        node = nodes.get(node_id)
+        if node is None:
+            msg = f"Unknown node {node_id}"
+            raise vol.Invalid(msg)
+        user = node.get("user", {})
+        user_id = user.get("id") or f"!{node_id:08x}"
+        metrics = node.get("deviceMetrics", {})
+        gateway_position = (nodes.get(self.gateway_id) or {}).get("position", {})
+        return {
+            "num": node_id,
+            "user_id": user_id,
+            "long_name": user.get("longName") or user_id,
+            "short_name": user.get("shortName") or user_id[-4:],
+            "hw_model": user.get("hwModel"),
+            "role": user.get("role"),
+            "is_licensed": bool(user.get("isLicensed", False)),
+            "has_public_key": bool(user.get("publicKey")),
+            "favorite": bool(node.get("isFavorite", False)),
+            "ignored": bool(node.get("isIgnored", False)),
+            "last_heard": node.get("lastHeard"),
+            "hops_away": node.get("hopsAway"),
+            "snr": node.get("snr"),
+            "rssi": node.get("rssi"),
+            "via_mqtt": bool(node.get("viaMqtt", False)),
+            "channel": node.get("channel"),
+            "battery_level": metrics.get("batteryLevel"),
+            "voltage": metrics.get("voltage"),
+            "channel_utilization": metrics.get("channelUtilization"),
+            "air_util_tx": metrics.get("airUtilTx"),
+            "uptime_seconds": metrics.get("uptimeSeconds"),
+            "position": _position_summary(node.get("position", {}), gateway_position),
+            "device_id": self._device_id(node_id),
+            "device_tracker": self._device_tracker_entity_id(node_id),
+            "gateway_device_tracker": self._device_tracker_entity_id(self.gateway_id) if self.gateway_id else None,
+            "is_gateway": node_id == self.gateway_id,
+            "conversation": node_conversation(node_id),
+        }
+
+    async def async_node_request(
+        self, node_id: int, request: str, telemetry_type: str | None = None
+    ) -> Mapping[str, Any]:
+        """Ask a node for telemetry, its position or a traceroute and return the decoded response."""
+        client = self.entry.runtime_data.client
+        if request == NODE_REQUEST_TELEMETRY:
+            metric = TelemetryType(telemetry_type or TelemetryType.DEVICE_METRICS)
+            return await client.request_telemetry(node_id, metric)
+        if request == NODE_REQUEST_POSITION:
+            response = dict(await client.request_position(node_id))
+            if "latitudeI" in response:
+                response["latitude"] = float(response["latitudeI"] * 10**-7)
+            if "longitudeI" in response:
+                response["longitude"] = float(response["longitudeI"] * 10**-7)
+            return response
+        if request == NODE_REQUEST_TRACEROUTE:
+            response = dict(await client.request_traceroute(node_id))
+            hops = {*response.get("route", []), *response.get("routeBack", []), node_id}
+            if self.gateway_id is not None:
+                hops.add(self.gateway_id)
+            response["nodes"] = {}
+            for hop in hops:
+                long_name, short_name, user_id = self._node_names(hop)
+                response["nodes"][str(hop)] = {"long_name": long_name, "short_name": short_name, "user_id": user_id}
+            return response
+        msg = f"Unknown request {request}"
+        raise vol.Invalid(msg)
+
+    async def async_set_favorite(self, node_id: int, *, favorite: bool) -> None:
+        await self.entry.runtime_data.client.async_set_favorite(node_id, favorite=favorite)
+
+    def channel_activity(self, index: int) -> dict[str, Any]:
+        """Summarise the stored history of a channel: message counts and the nodes heard on it."""
+        messages = self._conversations.get(channel_conversation(index), [])
+        senders: dict[int, dict[str, Any]] = {}
+        received = 0
+        for message in messages:
+            if message["direction"] != "in":
+                continue
+            received += 1
+            sender = senders.setdefault(
+                message["from"],
+                {
+                    "num": message["from"],
+                    "user_id": message.get("from_user_id"),
+                    "long_name": message.get("from_name"),
+                    "short_name": message.get("from_short"),
+                    "count": 0,
+                    "last_ts": 0,
+                    "conversation": node_conversation(message["from"]),
+                },
+            )
+            sender["count"] += 1
+            sender["last_ts"] = max(sender["last_ts"], message["ts"])
+        return {
+            "messages": len(messages),
+            "received": received,
+            "sent": len(messages) - received,
+            "first_ts": messages[0]["ts"] if messages else None,
+            "last_ts": messages[-1]["ts"] if messages else None,
+            "nodes": sorted(senders.values(), key=lambda s: -s["last_ts"]),
+        }
+
+    async def async_channel_details(self, index: int) -> dict[str, Any]:
+        """Describe a channel: its settings on the gateway plus the activity seen in the chat history."""
+        client = self.entry.runtime_data.client
+        channel = next((c for c in await client.async_get_channels() if int(c.get("index", 0)) == index), None)
+        if channel is None or channel.get("role") == "DISABLED":
+            msg = f"Unknown channel {index}"
+            raise vol.Invalid(msg)
+        settings = channel.get("settings", {})
+        module_settings = settings.get("moduleSettings", {})
+        lora = (await client.async_get_node_local_config()).get("lora", {})
+        module_config = await client.async_get_node_module_config()
+        mqtt = module_config.get("mqtt", {})
+        role = channel.get("role")
+        precision_bits = module_settings.get("positionPrecision")
+        return {
+            "index": index,
+            "name": settings.get("name") or ("Primary" if role == "PRIMARY" else f"Channel {index}"),
+            "role": role,
+            "public": _is_public_channel(settings.get("psk")),
+            "key_bytes": _psk_bytes(settings.get("psk")),
+            "uplink_enabled": bool(settings.get("uplinkEnabled", False)),
+            "downlink_enabled": bool(settings.get("downlinkEnabled", False)),
+            "position_precision_bits": precision_bits,
+            "position_precision": precision_to_meters(precision_bits),
+            "client_muted": bool(module_settings.get("isClientMuted", False)),
+            "gateway": {
+                "region": lora.get("region"),
+                "modem_preset": lora.get("modemPreset"),
+                "hop_limit": lora.get("hopLimit"),
+                "mqtt_enabled": bool(mqtt.get("enabled", False)),
+                "mqtt_address": mqtt.get("address") if mqtt.get("enabled") else None,
+                "mqtt_encryption_enabled": bool(mqtt.get("encryptionEnabled", False)),
+                "store_forward_enabled": bool(module_config.get("storeForward", {}).get("enabled", False)),
+            },
+            "activity": self.channel_activity(index),
+            "conversation": channel_conversation(index),
+        }
 
     def prefix_for(self, user: User | None) -> str | None:
         if not self.prefix_sender or user is None:
@@ -537,6 +750,10 @@ def _async_register_websocket_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_chat_send)
     websocket_api.async_register_command(hass, websocket_chat_clear)
     websocket_api.async_register_command(hass, websocket_chat_subscribe)
+    websocket_api.async_register_command(hass, websocket_chat_node)
+    websocket_api.async_register_command(hass, websocket_chat_node_request)
+    websocket_api.async_register_command(hass, websocket_chat_favorite)
+    websocket_api.async_register_command(hass, websocket_chat_channel)
 
 
 @websocket_api.websocket_command({vol.Required("type"): "meshtastic/chat/gateways"})
@@ -569,6 +786,7 @@ async def websocket_chat_gateways(
                 "max_bytes": MAX_TEXT_BYTES,
                 "prefix": chat.prefix_for(connection.user),
                 "can_clear": connection.user.is_admin,
+                "can_favorite": connection.user.is_admin,
                 "conversations": chat.summaries(),
                 **targets,
             }
@@ -647,3 +865,104 @@ def websocket_chat_subscribe(
 
     connection.subscriptions[msg["id"]] = async_dispatcher_connect(hass, SIGNAL_CHAT_UPDATE, _forward)
     connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "meshtastic/chat/node",
+        vol.Required("entry_id"): str,
+        vol.Required("node_id"): vol.Coerce(int),
+    }
+)
+@websocket_api.async_response
+async def websocket_chat_node(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    if (chat := _get_chat(hass, connection, msg)) is None:
+        return
+    try:
+        details = await chat.async_node_details(msg["node_id"])
+    except vol.Invalid as e:
+        connection.send_error(msg["id"], websocket_api.ERR_NOT_FOUND, str(e))
+        return
+    except Exception as e:  # noqa: BLE001
+        _LOGGER.debug("Failed to load node details", exc_info=True)
+        connection.send_error(msg["id"], websocket_api.ERR_UNKNOWN_ERROR, str(e) or type(e).__name__)
+        return
+    connection.send_result(msg["id"], details)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "meshtastic/chat/node/request",
+        vol.Required("entry_id"): str,
+        vol.Required("node_id"): vol.Coerce(int),
+        vol.Required("request"): vol.In(NODE_REQUESTS),
+        vol.Optional("telemetry_type"): vol.In([t.value for t in TelemetryType]),
+    }
+)
+@websocket_api.async_response
+async def websocket_chat_node_request(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    if (chat := _get_chat(hass, connection, msg)) is None:
+        return
+    try:
+        result = await chat.async_node_request(msg["node_id"], msg["request"], msg.get("telemetry_type"))
+    except (MeshtasticApiClientError, ValueError, TimeoutError) as e:
+        connection.send_error(msg["id"], websocket_api.ERR_UNKNOWN_ERROR, str(e) or type(e).__name__)
+        return
+    # the response usually updated the node database, send the fresh details along
+    try:
+        node = await chat.async_node_details(msg["node_id"])
+    except Exception:  # noqa: BLE001
+        node = None
+    connection.send_result(msg["id"], {"request": msg["request"], "result": result, "node": node})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "meshtastic/chat/favorite",
+        vol.Required("entry_id"): str,
+        vol.Required("node_id"): vol.Coerce(int),
+        vol.Required("favorite"): bool,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def websocket_chat_favorite(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    if (chat := _get_chat(hass, connection, msg)) is None:
+        return
+    try:
+        await chat.async_set_favorite(msg["node_id"], favorite=msg["favorite"])
+    except (MeshtasticApiClientError, ValueError, TimeoutError) as e:
+        connection.send_error(msg["id"], websocket_api.ERR_UNKNOWN_ERROR, str(e) or type(e).__name__)
+        return
+    connection.send_result(msg["id"], {"node_id": msg["node_id"], "favorite": msg["favorite"]})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "meshtastic/chat/channel",
+        vol.Required("entry_id"): str,
+        vol.Required("index"): vol.Coerce(int),
+    }
+)
+@websocket_api.async_response
+async def websocket_chat_channel(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    if (chat := _get_chat(hass, connection, msg)) is None:
+        return
+    try:
+        details = await chat.async_channel_details(msg["index"])
+    except vol.Invalid as e:
+        connection.send_error(msg["id"], websocket_api.ERR_NOT_FOUND, str(e))
+        return
+    except Exception as e:  # noqa: BLE001
+        _LOGGER.debug("Failed to load channel details", exc_info=True)
+        connection.send_error(msg["id"], websocket_api.ERR_UNKNOWN_ERROR, str(e) or type(e).__name__)
+        return
+    connection.send_result(msg["id"], details)

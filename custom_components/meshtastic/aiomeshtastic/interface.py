@@ -906,6 +906,20 @@ class MeshInterface:
 
         await self.send_admin_message_await_response(node=node, message=admin_message, expect_response=False)
 
+    async def set_favorite_node(self, node_id: int, *, favorite: bool = True, node: int | None = None) -> None:
+        """Mark ``node_id`` as a favorite (or remove the mark) in the node database of ``node`` (default: own node)."""
+        admin_message = admin_pb2.AdminMessage()
+        if favorite:
+            admin_message.set_favorite_node = node_id
+        else:
+            admin_message.remove_favorite_node = node_id
+
+        await self.send_admin_message_await_response(node=node, message=admin_message, expect_response=False)
+
+        if node is None:
+            # the device does not announce the change, mirror it in the local copy of the node database
+            await self._node_database_update(node_id, isFavorite=favorite)
+
     async def request_telemetry(
         self,
         node: int | MeshNode,
