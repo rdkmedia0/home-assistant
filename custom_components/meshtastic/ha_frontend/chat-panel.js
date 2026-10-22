@@ -43,6 +43,8 @@ const KEY_CHOICES = [
 ];
 const PRECISION_BITS = [0, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32];
 const CHANNEL_NAME_MAX_BYTES = 11;
+// nodes without a device tracker are shown to ha-map as states under this prefix (they never reach Home Assistant)
+const MAP_ENTITY_PREFIX = "device_tracker.meshtastic_chat_node_";
 const precisionToMeters = (bits) => (bits && bits >= 2 ? Math.round(5976446 / 2 ** (bits - 2)) : null);
 const precisionLabel = (bits) => {
   if (!bits) return "Off – no positions on this channel";
@@ -464,6 +466,7 @@ class MeshtasticChatPanel extends HTMLElement {
     this._details = null; // { kind: "node" | "channel", id, data, error, loading, busy, results }
     this._telemetryType = TELEMETRY_TYPES[0][0];
     this._mapCard = null;
+    this._mapStates = null;
     this._tooltipTimer = null;
   }
 
@@ -471,7 +474,7 @@ class MeshtasticChatPanel extends HTMLElement {
     const first = !this._hass;
     this._hass = hass;
     if (this._menuButton) this._menuButton.hass = hass;
-    if (this._mapCard) this._mapCard.hass = hass;
+    if (this._mapCard) this._mapCard.hass = this._mapHass(hass);
     if (first) this._init();
   }
 
@@ -1195,13 +1198,20 @@ class MeshtasticChatPanel extends HTMLElement {
 
   _unmountMap() {
     this._mapCard = null;
+    this._mapStates = null;
   }
 
-  // Home Assistant's map element (ha-map, built on Leaflet) is loaded on demand by its map card. Creating a map
-  // card loads it; afterwards the element can be used directly with the node trackers as entities and the other
-  // nodes, which have no entity, as markers of our own. Without the helpers the pane keeps the buttons only.
+  // Home Assistant's map element (ha-map) is loaded on demand by its map card. Creating a map card loads it;
+  // afterwards the element is used directly: the node trackers as real entities, and every other node with a
+  // position as a synthetic state the element draws the same way. Without the helpers the pane keeps the buttons.
+  _mapHass(hass) {
+    if (!this._mapStates || !hass) return hass;
+    return { ...hass, states: { ...hass.states, ...this._mapStates } };
+  }
+
   async _mountMap(container, entities, details, points = []) {
     this._mapCard = null;
+    this._mapStates = null;
     if ((!entities.length && !points.length) || typeof window.loadCardHelpers !== "function") return;
     try {
       const helpers = await window.loadCardHelpers();
@@ -1221,52 +1231,52 @@ class MeshtasticChatPanel extends HTMLElement {
       if (points.length) {
         await Promise.race([customElements.whenDefined("ha-map"), new Promise((resolve) => window.setTimeout(resolve, 5000))]);
         if (customElements.get("ha-map")) {
+          const states = {};
+          const mapEntities = [...entities];
+          const now = new Date().toISOString();
+          for (const p of points) {
+            const entityId = `${MAP_ENTITY_PREFIX}${p.num}`;
+            states[entityId] = {
+              entity_id: entityId,
+              state: String(p.short_name || "?").slice(0, 4),
+              last_changed: now,
+              last_updated: now,
+              context: { id: entityId, parent_id: null, user_id: null },
+              attributes: {
+                friendly_name: p.long_name,
+                latitude: p.latitude,
+                longitude: p.longitude,
+                source_type: "gps",
+                icon: "mdi:radio-tower",
+              },
+            };
+            mapEntities.push({
+              entity_id: entityId,
+              name: p.long_name,
+              label_mode: "state",
+              color: `hsl(${avatarHue(p.num)}, 45%, 45%)`,
+            });
+          }
+          this._mapStates = states;
           const map = document.createElement("ha-map");
-          map.hass = this._hass;
-          map.entities = entities;
-          map.autoFit = false;
+          map.entities = mapEntities;
+          map.autoFit = true;
           map.themeMode = "auto";
           map.style.height = tall ? "300px" : "200px";
+          map.hass = this._mapHass(this._hass);
           element = map;
         }
       }
-      if (this._details !== details || !container.isConnected) return;
+      if (this._details !== details || !container.isConnected) {
+        this._mapStates = null;
+        return;
+      }
       container.replaceChildren(element);
       container.classList.add("mounted");
       this._mapCard = element;
-      if (element !== card) this._addMapMarkers(element, entities, points, details);
     } catch (e) {
       // the map stays a link; nothing else depends on it
     }
-  }
-
-  // markers for nodes without a device tracker, drawn with the Leaflet instance of ha-map once it is up
-  async _addMapMarkers(map, entities, points, details) {
-    for (let i = 0; i < 25 && !(map.leafletMap && map.Leaflet); i++) {
-      await new Promise((resolve) => window.setTimeout(resolve, 200));
-    }
-    if (!map.leafletMap || !map.Leaflet || this._details !== details || !map.isConnected) return;
-    const L = map.Leaflet;
-    const bounds = [];
-    for (const p of points) {
-      const icon = L.divIcon({
-        html: `<div title="${escapeHtml(p.long_name)}" style="width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font:600 11px/1 Roboto,sans-serif;color:#fff;background:hsl(${avatarHue(
-          p.num
-        )},45%,45%);border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);cursor:pointer">${escapeHtml(String(p.short_name || "?").slice(0, 4))}</div>`,
-        iconSize: [36, 36],
-        iconAnchor: [18, 18],
-        className: "",
-      });
-      const marker = L.marker([p.latitude, p.longitude], { icon, title: p.long_name }).addTo(map.leafletMap);
-      marker.on("click", () => this._openDetails("node", p.num));
-      bounds.push([p.latitude, p.longitude]);
-    }
-    for (const entityId of entities) {
-      const state = this._hass.states && this._hass.states[entityId];
-      const attributes = state && state.attributes;
-      if (attributes && isSet(attributes.latitude) && isSet(attributes.longitude)) bounds.push([attributes.latitude, attributes.longitude]);
-    }
-    if (bounds.length) map.leafletMap.fitBounds(bounds, { padding: [24, 24], maxZoom: 14 });
   }
 
   // ---------- rendering ----------
@@ -1417,6 +1427,13 @@ class MeshtasticChatPanel extends HTMLElement {
       else if (dataset.action === "open-node") this._openDetails("node", Number(dataset.node));
       else if (dataset.action === "copy") this._copyText(dataset.text);
       else if (dataset.action === "disable-channel") this._disableChannel();
+    });
+    this._detailsEl.addEventListener("hass-more-info", (ev) => {
+      const entityId = ev.detail && ev.detail.entityId;
+      if (!entityId || !entityId.startsWith(MAP_ENTITY_PREFIX)) return;
+      ev.stopPropagation();
+      ev.preventDefault();
+      this._openDetails("node", Number(entityId.slice(MAP_ENTITY_PREFIX.length)));
     });
     this._detailsEl.addEventListener("submit", (ev) => {
       const form = ev.target.closest("form.channel-form");
