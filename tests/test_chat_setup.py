@@ -14,6 +14,7 @@ import pytest
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -333,3 +334,22 @@ async def test_options_form_tolerates_nodes_without_a_name(hass: HomeAssistant, 
     labels = {option["value"]: option["label"] for option in node_field["selector"]["select"]["options"]}
     assert labels[str(0x33333333)] == "!33333333 (!33333333)"  # no long name: shown by its id
     assert str(0x22222222) not in labels  # no user record at all: cannot become a device yet
+
+
+@pytest.mark.usefixtures("fake_api")
+async def test_selected_node_has_its_tracker_in_the_details(hass: HomeAssistant) -> None:
+    """The details of a node selected in the options point to the tracker entity the integration really created."""
+    entry = _entry({"chat": {"enable": True}, "nodes": [{"id": ANNA, "name": "Anna Hiking"}]})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    registry = er.async_get(hass)
+    trackers = [e for e in registry.entities.values() if e.platform == DOMAIN and e.domain == "device_tracker"]
+    assert {e.unique_id for e in trackers} >= {f"{entry.entry_id}_device_tracker_{ANNA}_node_position"}
+
+    chat = hass.data[DATA_CHAT][entry.entry_id]
+    details = await chat.async_node_details(ANNA)
+    assert details["device_tracker"] is not None
+    assert details["device_tracker"] in {e.entity_id for e in trackers}
+    assert details["device_id"] is not None
