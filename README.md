@@ -411,17 +411,17 @@ Assistant log with the user's name.
 - **Your gateway**: the row above the channels is the connected node itself. It opens the same details pane with a
   *Gateway* section on top: Home Assistant entry, firmware, hardware, role, region, modem preset, hop limit, TX
   power, MQTT, and how many channels and nodes it has.
-- **Map of the mesh**: the map button in the toolbar opens a view with Home Assistant's map showing every node
-  that reported a position to the gateway, and the same nodes as a list sorted by distance from the gateway with
-  the position age. Click a marker or a row to open the node's details.
+- **Map of the mesh**: the map button in the toolbar replaces the conversation with a full-size map of every node
+  that reported a position, drawn with Home Assistant's map engine but the chat's own markers (short name on a
+  coloured circle, full name on hover). The overlay lists the nodes sorted by distance from the gateway with a search
+  box; a row centres the map on that node, a marker opens its details, and the fit button shows the whole mesh
+  again. *Open the map* in a node's details opens this view centred on the node.
 
-<p align="center"><img src="docs/mesh-chat/map.png" width="800" alt="Map view: the gateway row at the top of the list, the embedded map with markers for all nodes, and the list of nodes with a position"></p>
+<p align="center"><img src="docs/mesh-chat/map.png" width="800" alt="Map view: full-size map with the chat's own node markers and an overlay listing the nodes with a position"></p>
 
-The map is Home Assistant's own map element. Nodes with a `device_tracker` entity (marked *tracker* in the list)
-are drawn by Home Assistant itself and clustered when they overlap; all other nodes are added as markers from the
-gateway's node database, so they appear here but not in Home Assistant's Map panel or automations. Turn on
-**Track every node with a position** in the Mesh Chat options to give every node that reported a position a device
-and a tracker: the Map panel, the map card and automations then see the whole mesh, and the chat map clusters them.
+Nodes with a `device_tracker` entity (marked *tracker* in the list) are the ones Home Assistant's own Map panel and
+automations know as well. Turn on **Track every node with a position** in the Mesh Chat options to give every node
+that reported a position a device and a tracker, so the Map panel and the map card see the whole mesh too.
 
 ### Options
 
