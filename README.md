@@ -404,6 +404,21 @@ channel list gets a **+** to create a channel in a free slot.
 Keys and the share link are only shown to users allowed to manage channels. Changes are written to the Home
 Assistant log with the user's name.
 
+### Your gateway and the map of the mesh
+
+- **Direct message from a channel**: click the sender's name above a received message to open the direct messages
+  with that node.
+- **Your gateway**: the row above the channels is the connected node itself. It opens the same details pane with a
+  *Gateway* section on top: Home Assistant entry, firmware, hardware, role, region, modem preset, hop limit, TX
+  power, MQTT, and how many channels and nodes it has.
+- **Map of the mesh**: the map button in the toolbar opens a view with Home Assistant's map and every node that
+  reported a position, sorted by distance from the gateway, with the position age. Click a node to open its details.
+
+<p align="center"><img src="docs/mesh-chat/map.png" width="800" alt="Map view: the gateway row at the top of the list, the embedded map with the gateway and a node, and the list of nodes with a position"></p>
+
+Only nodes with a `device_tracker` entity (the nodes selected in the integration options) are placed on the map;
+the others are still listed with their distance and bearing and marked *not on the map*.
+
 ### Options
 
 | Option | Default | Description |
