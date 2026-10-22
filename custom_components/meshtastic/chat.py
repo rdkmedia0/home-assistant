@@ -659,8 +659,13 @@ class MeshtasticChat:
             "nodes": sorted(senders.values(), key=lambda s: -s["last_ts"]),
         }
 
-    async def async_channel_details(self, index: int) -> dict[str, Any]:
-        """Describe a channel: its settings on the gateway plus the activity seen in the chat history."""
+    async def async_channel_details(self, index: int, *, share_urls: bool = False) -> dict[str, Any]:
+        """
+        Describe a channel: its settings on the gateway plus the activity seen in the chat history.
+
+        The share links carry the channel key, so they are only included when ``share_urls`` is set, which the
+        callers do for users allowed to manage channels.
+        """
         client = self.entry.runtime_data.client
         channel = next((c for c in await client.async_get_channels() if int(c.get("index", 0)) == index), None)
         if channel is None or channel.get("role") == "DISABLED":
@@ -696,8 +701,8 @@ class MeshtasticChat:
             },
             "activity": self.channel_activity(index),
             "conversation": channel_conversation(index),
-            "url": client.channel_url([index], add=True),
-            "url_all": client.channel_url(),
+            "url": client.channel_url([index], add=True) if share_urls else None,
+            "url_all": client.channel_url() if share_urls else None,
         }
 
     async def async_set_channel(  # noqa: PLR0913
@@ -774,7 +779,8 @@ class MeshtasticChat:
         )
         if stored.get("role") == CHANNEL_ROLE_DISABLED:
             return {"index": index, "role": CHANNEL_ROLE_DISABLED, "conversation": channel_conversation(index)}
-        return await self.async_channel_details(index)
+        # whoever may change a channel may also share it
+        return await self.async_channel_details(index, share_urls=True)
 
     def prefix_for(self, user: User | None) -> str | None:
         if not self.prefix_sender or user is None:
@@ -1187,7 +1193,7 @@ async def websocket_chat_channel(
     if (chat := _get_chat(hass, connection, msg)) is None:
         return
     try:
-        details = await chat.async_channel_details(msg["index"])
+        details = await chat.async_channel_details(msg["index"], share_urls=chat.can_manage_channels(connection.user))
     except vol.Invalid as e:
         connection.send_error(msg["id"], websocket_api.ERR_NOT_FOUND, str(e))
         return

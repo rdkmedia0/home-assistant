@@ -5,7 +5,7 @@
 // Mesh Chat panel: read and send Meshtastic channel and direct messages through a gateway.
 // Plain web component without external dependencies, styled with Home Assistant theme variables.
 
-const PANEL_BUILD = "v2.17"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
+const PANEL_BUILD = "v2.19"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
 const STORAGE_KEY = "meshtastic-chat";
 const HISTORY_LIMIT = 200;
 const TARGET_REFRESH_MS = 120 * 1000;
@@ -828,8 +828,10 @@ class MeshtasticChatPanel extends HTMLElement {
 
   async _send() {
     const gateway = this._gateway();
-    const text = this._textarea.value.trim();
-    if (!gateway || !this._conversation || !text || this._sending) return;
+    const conversation = this._conversation;
+    const draft = this._textarea.value;
+    const text = draft.trim();
+    if (!gateway || !conversation || !text || this._sending) return;
     if (this._composedLength(text) > gateway.max_bytes) return;
 
     this._sending = true;
@@ -838,17 +840,21 @@ class MeshtasticChatPanel extends HTMLElement {
       const message = await this._hass.callWS({
         type: "meshtastic/chat/send",
         entry_id: gateway.entry_id,
-        conversation: this._conversation,
+        conversation,
         text,
       });
-      // normally the subscription delivers the message first; this covers a missing subscription
-      const cached = this._messages.get(`${gateway.entry_id}|${this._conversation}`);
+      // the user may have moved on while the request was pending: the result belongs to the conversation it
+      // was sent in. Normally the subscription delivers the message first; this covers a missing subscription.
+      const cached = this._messages.get(`${gateway.entry_id}|${conversation}`);
+      const stillOpen = this._entryId === gateway.entry_id && this._conversation === conversation;
       if (cached && !cached.some((m) => m.id === message.id)) {
         cached.push(message);
-        this._renderMessages({ stickToBottom: true });
+        if (stillOpen) this._renderMessages({ stickToBottom: true });
       }
-      this._textarea.value = "";
-      this._autoGrow();
+      if (stillOpen && this._textarea.value === draft) {
+        this._textarea.value = "";
+        this._autoGrow();
+      }
     } catch (err) {
       this._showError(err.message || String(err));
     } finally {
@@ -1070,6 +1076,27 @@ class MeshtasticChatPanel extends HTMLElement {
   }
 
   // ---------- channel management ----------
+
+  // raw field values of a channel form, to survive a re-render of the pane
+  _channelFormDraft(form) {
+    const draft = { index: form.dataset.index, fields: {} };
+    for (const element of form.elements) {
+      if (!element.name) continue;
+      draft.fields[element.name] = element.type === "checkbox" ? element.checked : element.value;
+    }
+    return draft;
+  }
+
+  _restoreChannelFormDraft(form, draft) {
+    for (const [name, value] of Object.entries(draft.fields)) {
+      const element = form.elements[name];
+      if (!element) continue;
+      if (element.type === "checkbox") element.checked = value;
+      else element.value = value;
+    }
+    const custom = form.elements.custom_key;
+    if (custom && form.elements.key) custom.hidden = form.elements.key.value !== "custom";
+  }
 
   _channelFormValues(form) {
     const values = {
@@ -2100,6 +2127,10 @@ class MeshtasticChatPanel extends HTMLElement {
       body = this._nodeDetailsBody(data, details);
     }
 
+    // the periodic gateway refresh re-renders the pane; keep what the user typed into a channel form
+    const previousForm = el.querySelector("form.channel-form");
+    const draft = previousForm ? this._channelFormDraft(previousForm) : null;
+
     el.hidden = false;
     el.innerHTML = `
       <header class="details-header">
@@ -2112,6 +2143,8 @@ class MeshtasticChatPanel extends HTMLElement {
       <div class="details-body">${body}</div>
     `;
     this._detailsErrorEl = el.querySelector(".error");
+    const form = el.querySelector("form.channel-form");
+    if (form && draft && draft.index === form.dataset.index) this._restoreChannelFormDraft(form, draft);
 
     const mapContainer = el.querySelector(".map");
     if (mapContainer) {

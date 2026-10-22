@@ -640,6 +640,12 @@ async def test_channel_details_and_activity(hass: HomeAssistant, chat_setup) -> 
     assert primary["public"] is True
     assert primary["key_bytes"] == 1
     assert primary["activity"]["messages"] == 0
+    # the share links carry the key: only on request
+    assert primary["url"] is None
+    assert primary["url_all"] is None
+    shared = await chat.async_channel_details(0, share_urls=True)
+    assert shared["url"].startswith("https://meshtastic.org/e/?add=true#")
+    assert shared["url_all"].startswith("https://meshtastic.org/e/#")
 
     with pytest.raises(vol.Invalid, match="Unknown channel"):
         await chat.async_channel_details(2)  # disabled
@@ -774,6 +780,11 @@ async def test_interface_set_favorite_node() -> None:
     assert message.remove_favorite_node == ANNA
     assert interface.nodes()[ANNA]["isFavorite"] is False
 
+    # a node the local database does not know yet (only seen through its messages) gets a record
+    await interface.set_favorite_node(RELAY, favorite=True)
+    assert interface.nodes()[RELAY]["isFavorite"] is True
+    assert interface.nodes()[RELAY]["user"]["id"] == "!11111111"
+
 
 async def test_api_client_set_favorite_wraps_errors() -> None:
     client = MeshtasticApiClient.__new__(MeshtasticApiClient)
@@ -865,8 +876,13 @@ async def test_websocket_channel_set_permissions(  # noqa: PLR0913
         assert gateway["can_manage_channels"] is allowed
         assert gateway["free_channel_indexes"] == [2, 3, 4, 5, 6, 7]
 
+        # the channel's share link (it contains the key) follows the same permission
+        await ws.send_json({"id": 2, "type": "meshtastic/chat/channel", "entry_id": entry.entry_id, "index": 1})
+        details = (await ws.receive_json())["result"]
+        assert (details["url"] is not None) is allowed
+
         await ws.send_json(
-            {"id": 2, "type": "meshtastic/chat/channel/set", "entry_id": entry.entry_id, "index": 2, "name": "New"}
+            {"id": 3, "type": "meshtastic/chat/channel/set", "entry_id": entry.entry_id, "index": 2, "name": "New"}
         )
         response = await ws.receive_json()
         if allowed:

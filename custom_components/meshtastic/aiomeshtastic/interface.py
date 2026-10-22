@@ -944,7 +944,9 @@ class MeshInterface:
         await self.send_admin_message_await_response(node=node, message=admin_message, expect_response=False)
 
         if node is None:
-            # the device does not announce the change, mirror it in the local copy of the node database
+            # the device does not announce the change, mirror it in the local copy of the node database (which
+            # may not have the node yet, e.g. a sender only known from its messages)
+            self._get_or_create_node(node_id)
             await self._node_database_update(node_id, isFavorite=favorite)
 
     async def request_telemetry(
