@@ -379,7 +379,30 @@ is involved: the map is Home Assistant's own.
 For a **channel** the pane shows the index and role, the encryption (public default key, AES-128 or AES-256), MQTT
 uplink and downlink together with the gateway's MQTT state, the position precision shared on the channel, the gateway's
 region, modem preset and hop limit, and the activity in the stored history: how many messages were kept, the first and
-last one and the nodes heard on the channel – click one to open its direct messages. Channel settings are read-only.
+last one and the nodes heard on the channel – click one to open its direct messages.
+
+### Channel management
+
+Channels are read-only until the **Channel management from the chat** option is set to *Administrators only* or
+*All chat users*. Then the channel details end with an **Edit channel** form and a **Share** section, and the
+channel list gets a **+** to create a channel in a free slot.
+
+<p align="center"><img src="docs/mesh-chat/channel-management.png" width="800" alt="Channel details with the edit form, the disable button and the QR code to share the channel"></p>
+
+- Create: pick the slot, a name of up to 11 characters, the key (a new random AES-256 key by default, AES-128, the
+  public default key, none, or a key you paste in base64), MQTT uplink and downlink, and the position precision
+  shared on the channel.
+- Edit: rename, change the key, the MQTT flags or the position precision; disable a secondary channel (the stored
+  history stays). Every change is summarised in a confirmation dialog before it is sent, and the gateway applies it
+  immediately without a reboot.
+- The primary channel can be renamed and its flags changed, but its key and role stay as they are: a wrong primary
+  key cuts the gateway off the mesh, so that change is left to the Meshtastic app on the device.
+- Share: the QR code and link contain the channel settings including the key, in the same format the Meshtastic
+  apps use (`https://meshtastic.org/e/…`). Scanning adds the channel on a phone; the second link carries all
+  enabled channels with the gateway's LoRa settings.
+
+Keys and the share link are only shown to users allowed to manage channels. Changes are written to the Home
+Assistant log with the user's name.
 
 ### Options
 
@@ -388,6 +411,7 @@ last one and the nodes heard on the channel – click one to open its direct mes
 | Only administrators can use the chat | on | Turn off to let every Home Assistant user read and send messages through this gateway |
 | Prefix messages with the sender's name | off | All messages sent from Home Assistant come from the gateway node. When on, the Home Assistant user's name is added, e.g. `Alex B.: on my way` |
 | Messages kept per conversation | 200 | Older messages are removed once a conversation reaches this size |
+| Channel management from the chat | off | *Administrators only* or *All chat users* lets those users create, rename, re-key, enable or disable channels on the gateway from the channel details; off keeps channels read-only |
 
 History is kept in `.storage/meshtastic.chat.<entry id>` and removed when the gateway is deleted.
 
