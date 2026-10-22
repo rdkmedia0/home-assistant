@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
-from homeassistant.components.device_tracker import DOMAIN as DEVICE_TRACKER_DOMAIN
 from homeassistant.const import ATTR_DEVICE_ID, ATTR_ENTITY_ID
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
@@ -481,10 +480,6 @@ class MeshtasticChat:
         free_indexes = [i for i in range(1, CHAT_CHANNEL_COUNT) if i not in used_indexes]
         return {"channels": channels, "nodes": nodes, "free_channel_indexes": free_indexes}
 
-    def _device_tracker_entity_id(self, node_id: int) -> str | None:
-        unique_id = f"{self.entry.entry_id}_{DEVICE_TRACKER_DOMAIN}_{node_id}_node_position"
-        return er.async_get(self.hass).async_get_entity_id(DEVICE_TRACKER_DOMAIN, DOMAIN, unique_id)
-
     def _device_id(self, node_id: int) -> str | None:
         device = dr.async_get(self.hass).async_get_device(identifiers={(DOMAIN, str(node_id))})
         return device.id if device else None
@@ -537,8 +532,6 @@ class MeshtasticChat:
             "uptime_seconds": metrics.get("uptimeSeconds"),
             "position": _position_summary(node.get("position", {}), gateway_position),
             "device_id": self._device_id(node_id),
-            "device_tracker": self._device_tracker_entity_id(node_id),
-            "gateway_device_tracker": self._device_tracker_entity_id(self.gateway_id) if self.gateway_id else None,
             "gateway_position": gateway_marker,
             "is_gateway": node_id == self.gateway_id,
             "gateway_info": gateway_info,
@@ -587,7 +580,6 @@ class MeshtasticChat:
                     **_user_fields(node_id, node.get("user", {})),
                     "last_heard": node.get("lastHeard"),
                     "position": position,
-                    "device_tracker": self._device_tracker_entity_id(node_id),
                     "is_gateway": node_id == self.gateway_id,
                     "conversation": node_conversation(node_id),
                 }

@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import voluptuous as vol
 from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_capture_events
 
 from custom_components.meshtastic.aiomeshtastic.errors import MeshtasticError
@@ -539,14 +538,6 @@ async def test_node_details(hass: HomeAssistant, chat_setup) -> None:
     device = dr.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id, identifiers={(DOMAIN, str(ANNA))}, name="Anna Hiking"
     )
-    tracker = er.async_get(hass).async_get_or_create(
-        "device_tracker",
-        DOMAIN,
-        f"{entry.entry_id}_device_tracker_{ANNA}_node_position",
-        suggested_object_id="meshtastic_anna_position",
-        config_entry=entry,
-        device_id=device.id,
-    )
 
     details = await chat.async_node_details(ANNA)
     assert details["long_name"] == "Anna Hiking"
@@ -558,8 +549,6 @@ async def test_node_details(hass: HomeAssistant, chat_setup) -> None:
     assert details["battery_level"] == 81
     assert details["uptime_seconds"] == 3600
     assert details["device_id"] == device.id
-    assert details["device_tracker"] == tracker.entity_id
-    assert details["gateway_device_tracker"] is None
     assert details["gateway_position"] == {
         "num": GATEWAY,
         "short_name": "4904",
@@ -990,13 +979,6 @@ async def test_api_client_channel_url_and_write() -> None:
 
 async def test_gateway_details_and_map(hass: HomeAssistant, chat_setup) -> None:
     entry, chat, _ = chat_setup
-    tracker = er.async_get(hass).async_get_or_create(
-        "device_tracker",
-        DOMAIN,
-        f"{entry.entry_id}_device_tracker_{GATEWAY}_node_position",
-        suggested_object_id="meshtastic_gateway_position",
-        config_entry=entry,
-    )
 
     details = await chat.async_node_details(GATEWAY)
     assert details["is_gateway"] is True
@@ -1025,10 +1007,7 @@ async def test_gateway_details_and_map(hass: HomeAssistant, chat_setup) -> None:
 
     nodes = await chat.async_map_nodes()
     assert nodes["nodes_known"] == 2
-    assert [(n["num"], n["is_gateway"], n["device_tracker"]) for n in nodes["nodes"]] == [
-        (GATEWAY, True, tracker.entity_id),
-        (ANNA, False, None),
-    ]
+    assert [(n["num"], n["is_gateway"]) for n in nodes["nodes"]] == [(GATEWAY, True), (ANNA, False)]
     assert nodes["nodes"][1]["position"]["distance"] == pytest.approx(1112, abs=2)
 
 

@@ -336,22 +336,20 @@ async def test_options_form_tolerates_nodes_without_a_name(hass: HomeAssistant, 
     assert str(0x22222222) not in labels  # no user record at all: cannot become a device yet
 
 
+def _tracker_unique_ids(hass: HomeAssistant) -> set[str]:
+    entities = er.async_get(hass).entities.values()
+    return {e.unique_id for e in entities if e.platform == DOMAIN and e.domain == "device_tracker"}
+
+
 @pytest.mark.usefixtures("fake_api")
-async def test_selected_node_has_its_tracker_in_the_details(hass: HomeAssistant) -> None:
-    """The details of a node selected in the options point to the tracker entity the integration really created."""
+async def test_selected_node_gets_a_tracker_and_a_device(hass: HomeAssistant) -> None:
     entry = _entry({"chat": {"enable": True}, "nodes": [{"id": ANNA, "name": "Anna Hiking"}]})
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    registry = er.async_get(hass)
-    trackers = [e for e in registry.entities.values() if e.platform == DOMAIN and e.domain == "device_tracker"]
-    assert {e.unique_id for e in trackers} >= {f"{entry.entry_id}_device_tracker_{ANNA}_node_position"}
-
-    chat = hass.data[DATA_CHAT][entry.entry_id]
-    details = await chat.async_node_details(ANNA)
-    assert details["device_tracker"] is not None
-    assert details["device_tracker"] in {e.entity_id for e in trackers}
+    assert f"{entry.entry_id}_device_tracker_{ANNA}_node_position" in _tracker_unique_ids(hass)
+    details = await hass.data[DATA_CHAT][entry.entry_id].async_node_details(ANNA)
     assert details["device_id"] is not None
 
 
@@ -362,12 +360,11 @@ async def test_node_added_in_the_options_gets_its_tracker(hass: HomeAssistant) -
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    chat = hass.data[DATA_CHAT][entry.entry_id]
-    assert (await chat.async_node_details(ANNA))["device_tracker"] is None
+    assert f"{entry.entry_id}_device_tracker_{ANNA}_node_position" not in _tracker_unique_ids(hass)
 
     hass.config_entries.async_update_entry(entry, options={**entry.options, "nodes": [{"id": ANNA, "name": "Anna"}]})
     await hass.async_block_till_done()
 
-    chat = hass.data[DATA_CHAT][entry.entry_id]
-    details = await chat.async_node_details(ANNA)
-    assert details["device_tracker"] is not None
+    assert f"{entry.entry_id}_device_tracker_{ANNA}_node_position" in _tracker_unique_ids(hass)
+    details = await hass.data[DATA_CHAT][entry.entry_id].async_node_details(ANNA)
+    assert details["device_id"] is not None

@@ -2248,12 +2248,7 @@ class MeshtasticChatPanel extends HTMLElement {
         <p class="hint map-status" hidden></p>
         <div class="actions">
           <button class="chip-button" data-action="open-map" data-node="${node.num}"><ha-icon icon="mdi:map"></ha-icon>Open the map</button>
-        </div>
-        ${
-          node.device_tracker
-            ? ""
-            : `<p class="hint">The gateway knows this position, but Home Assistant has no device tracker for the node yet, so the Map panel and automations cannot use it. Select the node in the integration options (Devices &gt; Meshtastic &gt; Configure) to get one.</p>`
-        }`;
+        </div>`;
     } else {
       position = `${this._section("Position", [["Position", "not received yet"]])}`;
     }
