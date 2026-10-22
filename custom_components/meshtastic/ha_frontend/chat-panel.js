@@ -474,7 +474,7 @@ class MeshtasticChatPanel extends HTMLElement {
     const first = !this._hass;
     this._hass = hass;
     if (this._menuButton) this._menuButton.hass = hass;
-    if (this._mapCard) this._mapCard.hass = this._mapHass(hass);
+    if (this._mapCard && "hass" in this._mapCard) this._mapCard.hass = this._mapHass(hass);
     if (first) this._init();
   }
 
@@ -1202,35 +1202,84 @@ class MeshtasticChatPanel extends HTMLElement {
   }
 
   // Home Assistant's map element (ha-map) is loaded on demand by its map card. Creating a map card loads it;
-  // afterwards the element is used directly: the node trackers as real entities, and every other node with a
-  // position as a synthetic state the element draws the same way. Without the helpers the pane keeps the buttons.
+  // afterwards the element is used directly: the node trackers as entities (drawn by Home Assistant) and every
+  // other node with a position as a location of our own. Recent frontends take those through the element's
+  // "editableLocations" property (it also fires a click event per location); older ones, which still take a
+  // "hass" property, get a copy of hass with a synthetic state per node instead. Without the helpers the pane
+  // keeps the buttons only.
   _mapHass(hass) {
     if (!this._mapStates || !hass) return hass;
     return { ...hass, states: { ...hass.states, ...this._mapStates } };
   }
 
+  _mapMarkerElement(point) {
+    const element = document.createElement("div");
+    element.title = point.long_name;
+    element.textContent = String(point.short_name || "?").slice(0, 4);
+    element.style.cssText = `width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font:600 11px/1 Roboto,sans-serif;color:#fff;background:hsl(${avatarHue(
+      point.num
+    )},45%,45%);border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);cursor:pointer;box-sizing:border-box`;
+    return element;
+  }
+
+  // Make the frontend load ha-map: a dashboard's card helpers do it when a dashboard was opened before, otherwise
+  // a hui-card (available on every page of recent frontends) creating a map card does. Resolves to true when the
+  // element is defined.
+  async _loadMapElement(container) {
+    if (customElements.get("ha-map")) return true;
+    const config = { type: "map", geo_location_sources: ["meshtastic"] }; // a valid map card that shows nothing
+    let probe = null;
+    try {
+      if (typeof window.loadCardHelpers === "function") {
+        const helpers = await window.loadCardHelpers();
+        helpers.createCardElement(config);
+      } else if (customElements.get("hui-card")) {
+        probe = document.createElement("hui-card");
+        probe.hass = this._hass;
+        probe.config = config;
+        if (typeof probe.load === "function") probe.load();
+        probe.style.cssText = "position:absolute;left:-9999px;top:0;width:200px;height:100px;visibility:hidden";
+        container.appendChild(probe);
+      } else {
+        return false;
+      }
+      await Promise.race([customElements.whenDefined("ha-map"), new Promise((resolve) => window.setTimeout(resolve, 8000))]);
+    } catch (e) {
+      // treated as unavailable below
+    } finally {
+      if (probe) probe.remove();
+    }
+    return !!customElements.get("ha-map");
+  }
+
   async _mountMap(container, entities, details, points = []) {
     this._mapCard = null;
     this._mapStates = null;
-    if ((!entities.length && !points.length) || typeof window.loadCardHelpers !== "function") return;
+    if (!entities.length && !points.length) return;
     try {
-      const helpers = await window.loadCardHelpers();
       const tall = container.classList.contains("tall");
-      const cardConfig = {
-        type: "map",
-        auto_fit: true,
-        default_zoom: 13,
-        aspect_ratio: tall ? "4:3" : "16:9",
-        theme_mode: "auto",
-      };
-      if (entities.length) cardConfig.entities = entities;
-      else cardConfig.geo_location_sources = ["meshtastic"]; // a valid config that shows nothing
-      const card = helpers.createCardElement(cardConfig);
-      card.hass = this._hass;
-      let element = card;
-      if (points.length) {
-        await Promise.race([customElements.whenDefined("ha-map"), new Promise((resolve) => window.setTimeout(resolve, 5000))]);
-        if (customElements.get("ha-map")) {
+      let element = null;
+      if (await this._loadMapElement(container)) {
+        const map = document.createElement("ha-map");
+        if ("editableLocations" in map) {
+          map.entities = [...entities];
+          map.editableLocations = points.map((p) => ({
+            id: `node-${p.num}`,
+            location: [p.latitude, p.longitude],
+            title: p.long_name,
+            element: this._mapMarkerElement(p),
+            elementSize: [36, 36],
+            activatable: true,
+            locationEditable: false,
+            radiusEditable: false,
+            fit: true,
+          }));
+          map.autoFit = true;
+          map.themeMode = "auto";
+          map.style.height = tall ? "300px" : "200px";
+          if ("hass" in map) map.hass = this._hass;
+          element = map;
+        } else if ("hass" in map) {
           const states = {};
           const mapEntities = [...entities];
           const now = new Date().toISOString();
@@ -1258,7 +1307,6 @@ class MeshtasticChatPanel extends HTMLElement {
             });
           }
           this._mapStates = states;
-          const map = document.createElement("ha-map");
           map.entities = mapEntities;
           map.autoFit = true;
           map.themeMode = "auto";
@@ -1267,6 +1315,20 @@ class MeshtasticChatPanel extends HTMLElement {
           element = map;
         }
       }
+      if (!element && entities.length && typeof window.loadCardHelpers === "function") {
+        // ha-map could not be loaded directly: at least the trackers through the map card
+        const helpers = await window.loadCardHelpers();
+        element = helpers.createCardElement({
+          type: "map",
+          entities,
+          auto_fit: true,
+          default_zoom: 13,
+          aspect_ratio: tall ? "4:3" : "16:9",
+          theme_mode: "auto",
+        });
+        element.hass = this._hass;
+      }
+      if (!element) return;
       if (this._details !== details || !container.isConnected) {
         this._mapStates = null;
         return;
@@ -1427,6 +1489,12 @@ class MeshtasticChatPanel extends HTMLElement {
       else if (dataset.action === "open-node") this._openDetails("node", Number(dataset.node));
       else if (dataset.action === "copy") this._copyText(dataset.text);
       else if (dataset.action === "disable-channel") this._disableChannel();
+    });
+    this._detailsEl.addEventListener("editable-location-clicked", (ev) => {
+      const id = ev.detail && ev.detail.id;
+      if (typeof id !== "string" || !id.startsWith("node-")) return;
+      ev.stopPropagation();
+      this._openDetails("node", Number(id.slice(5)));
     });
     this._detailsEl.addEventListener("hass-more-info", (ev) => {
       const entityId = ev.detail && ev.detail.entityId;
@@ -1863,7 +1931,7 @@ class MeshtasticChatPanel extends HTMLElement {
     const points = data.nodes
       .filter((n) => !n.device_tracker)
       .map((n) => ({ num: n.num, short_name: n.short_name, long_name: n.long_name, latitude: n.position.latitude, longitude: n.position.longitude }));
-    const canEmbed = typeof window.loadCardHelpers === "function" && data.nodes.length > 0;
+    const canEmbed = (typeof window.loadCardHelpers === "function" || !!customElements.get("hui-card") || !!customElements.get("ha-map")) && data.nodes.length > 0;
     const missing = points.length;
     const rows = data.nodes
       .map((n) => {
@@ -2654,7 +2722,9 @@ class MeshtasticChatPanel extends HTMLElement {
         margin-top: 12px;
         border-radius: 12px;
         overflow: hidden;
-        display: none;
+        display: block;
+        position: relative;
+        min-height: 0;
       }
       .map.mounted { display: block; }
       .map > * { display: block; }
