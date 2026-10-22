@@ -2340,7 +2340,7 @@ class MeshtasticChatPanel extends HTMLElement {
           plugged ? "Plugged in" : "Battery"
         )}
         ${ring(1, String(g.nodes_known), "Nodes", "neutral", "Nodes known to the gateway")}
-        ${ring(1, String(g.messages_today), "Today", "neutral", `Messages today (${g.messages_total} stored)`)}
+        ${ring(1, String(g.messages_today), "Messages", "neutral", `Messages today (${g.messages_total} stored)`)}
       </div>`;
   }
 
