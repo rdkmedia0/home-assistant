@@ -346,6 +346,40 @@ and to every user once a gateway allows non-administrators (see the options belo
 | "… via Home Assistant" under a message | which Home Assistant user, automation or bridge sent it |
 | Byte counter next to the composer | Meshtastic text messages are limited to 200 bytes, prefix included |
 | Bin icon in the header | administrators can delete the stored history of a conversation; messages on devices are not affected |
+| Name or ⓘ in the header | opens the details of the node or channel (see below) |
+
+### Node details, favourites and the map
+
+Hovering a node in the list shows the essentials: hardware, role, when it was last heard, hops, SNR and battery.
+Clicking the name in the conversation header opens the details pane; on phones it replaces the conversation.
+
+<p align="center"><img src="docs/mesh-chat/node-details.png" width="800" alt="Mesh Chat with the details of a node open on the right: position with distance and bearing, a map, security flags, the Home Assistant device and the request buttons"></p>
+
+For a **node** the pane shows the user ID, hardware and role, how it was last heard (time, hops, SNR, RSSI, via MQTT),
+the last device metrics the gateway received (battery, voltage, channel and air utilisation, uptime), the position with
+its precision and age, the favourite and public-key flags and, when the node has one, a button to its Home Assistant
+device. The **Ask the node** buttons send the integration's existing requests over the mesh – telemetry (device,
+environment, power or air quality metrics), position and traceroute – and show the reply, including the route with the
+SNR of every hop. Requests can take up to a minute.
+
+**Favourites** – the star next to a node (in the list and in the details pane) stores the favourite in the gateway's
+node database, exactly like the Meshtastic apps do, so the gateway's own screen and every client connected to it see it
+too. Favourites are listed first. Setting favourites changes the device, so it is limited to Home Assistant
+administrators; reading details and sending requests follow the gateway's "Only administrators" option like the chat.
+
+**Map and location** – when the node has a position the pane shows the distance and bearing from the gateway and
+embeds Home Assistant's map with the node and the gateway. *Show on map* opens the node's tracker with its location
+and history, *Open the map* switches to the Map panel. Both need the node's `device_tracker`, which exists for the
+nodes selected in the integration options; nodes without one still show their coordinates. No external map service
+is involved: the map is Home Assistant's own.
+
+<p align="center"><img src="docs/mesh-chat/channel-details.png" width="800" alt="Mesh Chat with the details of a channel open: encryption, MQTT uplink and downlink, gateway radio settings and the nodes heard on the channel"> </p>
+<p align="center"><img src="docs/mesh-chat/phone-actions.png" width="240" alt="Node details on a phone: the request buttons with a telemetry reply and a traceroute"></p>
+
+For a **channel** the pane shows the index and role, the encryption (public default key, AES-128 or AES-256), MQTT
+uplink and downlink together with the gateway's MQTT state, the position precision shared on the channel, the gateway's
+region, modem preset and hop limit, and the activity in the stored history: how many messages were kept, the first and
+last one and the nodes heard on the channel – click one to open its direct messages. Channel settings are read-only.
 
 ### Options
 
