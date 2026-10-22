@@ -5,7 +5,7 @@
 // Mesh Chat panel: read and send Meshtastic channel and direct messages through a gateway.
 // Plain web component without external dependencies, styled with Home Assistant theme variables.
 
-const PANEL_BUILD = "v2.13"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
+const PANEL_BUILD = "v2.14"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
 const STORAGE_KEY = "meshtastic-chat";
 const HISTORY_LIMIT = 200;
 const TARGET_REFRESH_MS = 120 * 1000;
@@ -2184,11 +2184,6 @@ class MeshtasticChatPanel extends HTMLElement {
       const points = [{ num: node.num, short_name: node.short_name, long_name: node.long_name, latitude: p.latitude, longitude: p.longitude }];
       if (node.gateway_position && !node.is_gateway) points.push(node.gateway_position);
       const buttons = [];
-      if (node.device_tracker) {
-        buttons.push(
-          `<button class="chip-button" data-action="more-info" data-entity="${escapeHtml(node.device_tracker)}"><ha-icon icon="mdi:map-marker"></ha-icon>Show on map</button>`
-        );
-      }
       buttons.push(`<button class="chip-button" data-action="open-map" data-node="${node.num}"><ha-icon icon="mdi:map"></ha-icon>Open the map</button>`);
       position = `
         ${this._section("Position", rows)}

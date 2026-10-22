@@ -368,10 +368,8 @@ too. Favourites are listed first. Setting favourites changes the device, so it i
 administrators; reading details and sending requests follow the gateway's "Only administrators" option like the chat.
 
 **Map and location** – when the node has a position the pane shows the distance and bearing from the gateway and
-embeds Home Assistant's map with the node and the gateway. *Show on map* opens the node's tracker with its location
-and history, *Open the map* switches to the Map panel. Both need the node's `device_tracker`, which exists for the
-nodes selected in the integration options; nodes without one still show their coordinates. No external map service
-is involved: the map is Home Assistant's own.
+a small map with the node and the gateway; *Open the map* opens the full map view centred on the node. No external
+map service is involved: the map is Home Assistant's own map engine.
 
 <p align="center"><img src="docs/mesh-chat/channel-details.png" width="800" alt="Mesh Chat with the details of a channel open: encryption, MQTT uplink and downlink, gateway radio settings and the nodes heard on the channel"> </p>
 <p align="center"><img src="docs/mesh-chat/phone-actions.png" width="240" alt="Node details on a phone: the request buttons with a telemetry reply and a traceroute"></p>
