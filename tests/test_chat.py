@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
@@ -17,7 +18,14 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry, async_
 
 from custom_components.meshtastic.aiomeshtastic.errors import MeshtasticError
 from custom_components.meshtastic.aiomeshtastic.interface import MeshInterface, MeshNode
-from custom_components.meshtastic.aiomeshtastic.protobuf import mesh_pb2
+from custom_components.meshtastic.aiomeshtastic.protobuf import (
+    admin_pb2,
+    apponly_pb2,
+    channel_pb2,
+    config_pb2,
+    localonly_pb2,
+    mesh_pb2,
+)
 from custom_components.meshtastic.api import (
     EVENT_MESHTASTIC_API_TEXT_MESSAGE,
     MeshtasticApiClient,
@@ -53,6 +61,19 @@ class FakeClient:
         self.favorite_calls: list[tuple[int, bool]] = []
         self.requests: list[tuple[str, int, str | None]] = []
         self.request_error: Exception | None = None
+        self.channels: dict[int, dict[str, Any]] = {
+            0: self._channel(0, "PRIMARY", "", "AQ=="),
+            1: self._channel(1, "SECONDARY", "SOSPrivate", "c2VjcmV0c2VjcmV0c2VjcmV0MTI="),
+            2: self._channel(2, "DISABLED", "", ""),
+        }
+        self.written_channels: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _channel(index: int, role: str, name: str, psk: str, **module_settings: Any) -> dict[str, Any]:
+        settings = {"name": name, "psk": psk, "uplinkEnabled": False, "downlinkEnabled": False}
+        if module_settings:
+            settings["moduleSettings"] = module_settings
+        return {"index": index, "role": role, "settings": settings}
 
     def get_node_info(self, node_id: int) -> MeshNode | None:
         if node_id == ANNA:
@@ -80,15 +101,41 @@ class FakeClient:
         self.sent.append({"text": text, "to": destination_id, "channel": channel_index, "ack": want_ack})
 
     async def async_get_channels(self) -> list[dict[str, Any]]:
-        def channel(index: int, role: str, name: str, psk: str) -> dict[str, Any]:
-            settings = {"name": name, "psk": psk, "uplinkEnabled": False, "downlinkEnabled": False}
-            return {"index": index, "role": role, "settings": settings}
+        return [self.channels[i] for i in sorted(self.channels)]
 
-        return [
-            channel(0, "PRIMARY", "", "AQ=="),
-            channel(1, "SECONDARY", "SOSPrivate", "c2VjcmV0c2VjcmV0c2VjcmV0MTI="),
-            channel(2, "DISABLED", "", ""),
-        ]
+    async def async_write_channel(  # noqa: PLR0913
+        self,
+        index: int,
+        *,
+        role: str,
+        name: str,
+        psk: bytes,
+        uplink_enabled: bool,
+        downlink_enabled: bool,
+        position_precision: int,
+    ) -> dict[str, Any]:
+        if isinstance(self.request_error, Exception):
+            raise self.request_error
+        stored = self._channel(
+            index,
+            role,
+            name,
+            base64.b64encode(psk).decode(),
+            positionPrecision=position_precision,
+        )
+        stored["settings"]["uplinkEnabled"] = uplink_enabled
+        stored["settings"]["downlinkEnabled"] = downlink_enabled
+        self.channels[index] = stored
+        self.written_channels.append({"index": index, "role": role, "name": name, "psk": psk})
+        return stored
+
+    def channel_url(self, indexes: list[int] | None = None, *, add: bool = False) -> str | None:
+        enabled = [i for i in sorted(self.channels) if self.channels[i]["role"] != "DISABLED"]
+        if indexes is not None:
+            enabled = [i for i in enabled if i in indexes]
+        if not enabled:
+            return None
+        return f"https://meshtastic.org/e/{'?add=true' if add else ''}#" + "-".join(str(i) for i in enabled)
 
     async def async_get_all_nodes(self) -> dict[int, dict[str, Any]]:
         return {
@@ -706,3 +753,192 @@ async def test_api_client_set_favorite_wraps_errors() -> None:
     with pytest.raises(MeshtasticApiClientError, match="no ack"):
         await client.async_set_favorite(ANNA, favorite=True)
     client._interface.set_favorite_node.assert_awaited_once_with(ANNA, favorite=True)  # noqa: SLF001
+
+
+async def test_set_channel(chat_setup) -> None:
+    _, chat, client = chat_setup
+    user = SimpleNamespace(name="Steve Smith", is_admin=True)
+
+    # a free slot becomes a secondary channel with a fresh 256 bit key
+    created = await chat.async_set_channel(3, name="Hikers", user=user)
+    assert (created["index"], created["role"], created["name"]) == (3, "SECONDARY", "Hikers")
+    assert created["key_bytes"] == 32
+    assert created["public"] is False
+    assert created["url"].startswith("https://meshtastic.org/e/?add=true#")
+    assert client.written_channels[-1]["role"] == "SECONDARY"
+    first_key = client.written_channels[-1]["psk"]
+    assert len(first_key) == 32
+
+    # renaming keeps the key
+    renamed = await chat.async_set_channel(3, name="Hikers2")
+    assert renamed["name"] == "Hikers2"
+    assert client.written_channels[-1]["psk"] == first_key
+
+    # key choices
+    assert (await chat.async_set_channel(3, key="default"))["public"] is True
+    assert client.written_channels[-1]["psk"] == b"\x01"
+    await chat.async_set_channel(3, key="none")
+    assert client.written_channels[-1]["psk"] == b""
+    await chat.async_set_channel(3, key="random128")
+    assert len(client.written_channels[-1]["psk"]) == 16
+    await chat.async_set_channel(3, key=base64.b64encode(b"k" * 16).decode())
+    assert client.written_channels[-1]["psk"] == b"k" * 16
+
+    # flags and position precision
+    flags = await chat.async_set_channel(3, uplink_enabled=True, position_precision=13)
+    assert flags["uplink_enabled"] is True
+    assert flags["downlink_enabled"] is False
+    assert flags["position_precision_bits"] == 13
+    assert flags["position_precision"] == 2918
+
+    # disabling frees the slot again
+    disabled = await chat.async_set_channel(3, role="DISABLED")
+    assert disabled == {"index": 3, "role": "DISABLED", "conversation": "channel:3"}
+    targets = await chat.async_targets()
+    assert targets["free_channel_indexes"] == [2, 3, 4, 5, 6, 7]
+
+    # the primary channel can be renamed and its flags changed, but it keeps its role and key
+    primary = await chat.async_set_channel(0, name="Main", uplink_enabled=True)
+    assert primary["name"] == "Main"
+    assert client.written_channels[-1]["role"] == "PRIMARY"
+    assert client.written_channels[-1]["psk"] == b"\x01"
+
+    with pytest.raises(vol.Invalid, match="primary channel cannot be disabled"):
+        await chat.async_set_channel(0, role="DISABLED")
+    with pytest.raises(vol.Invalid, match="key of the primary channel"):
+        await chat.async_set_channel(0, key="random")
+    with pytest.raises(vol.Invalid, match="Only channel 0"):
+        await chat.async_set_channel(1, role="PRIMARY")
+    with pytest.raises(vol.Invalid, match="limited to 11 bytes"):
+        await chat.async_set_channel(1, name="x" * 12)
+    with pytest.raises(vol.Invalid, match="not valid base64"):
+        await chat.async_set_channel(1, key="!!!")
+    with pytest.raises(vol.Invalid, match="A key must be"):
+        await chat.async_set_channel(1, key=base64.b64encode(b"short").decode())
+    with pytest.raises(vol.Invalid, match="between 0 and 7"):
+        await chat.async_set_channel(8)
+
+
+@pytest.mark.parametrize(
+    ("level", "admin_allowed", "user_allowed"),
+    [("off", False, False), ("admin", True, False), ("all", True, True)],
+)
+async def test_websocket_channel_set_permissions(  # noqa: PLR0913
+    hass: HomeAssistant, hass_ws_client, hass_read_only_access_token, level, admin_allowed, user_allowed
+) -> None:
+    client = FakeClient()
+    entry = _make_entry(hass, client, require_admin=False, channel_management=level)
+    await async_setup_chat(hass, entry)
+
+    for token, allowed in ((None, admin_allowed), (hass_read_only_access_token, user_allowed)):
+        ws = await hass_ws_client(hass, token) if token else await hass_ws_client(hass)
+        await ws.send_json({"id": 1, "type": "meshtastic/chat/gateways"})
+        gateway = (await ws.receive_json())["result"][0]
+        assert gateway["can_manage_channels"] is allowed
+        assert gateway["free_channel_indexes"] == [2, 3, 4, 5, 6, 7]
+
+        await ws.send_json(
+            {"id": 2, "type": "meshtastic/chat/channel/set", "entry_id": entry.entry_id, "index": 2, "name": "New"}
+        )
+        response = await ws.receive_json()
+        if allowed:
+            assert response["success"]
+            assert response["result"]["name"] == "New"
+            client.channels[2] = FakeClient._channel(2, "DISABLED", "", "")  # noqa: SLF001
+        else:
+            assert response["error"]["code"] == "unauthorized"
+
+    if admin_allowed:
+        ws = await hass_ws_client(hass)
+        await ws.send_json(
+            {"id": 3, "type": "meshtastic/chat/channel/set", "entry_id": entry.entry_id, "index": 1, "key": "!!!"}
+        )
+        response = await ws.receive_json()
+        assert response["error"]["code"] == "invalid_format"
+
+        client.request_error = MeshtasticApiClientError("No acknowledgement received")
+        await ws.send_json(
+            {"id": 4, "type": "meshtastic/chat/channel/set", "entry_id": entry.entry_id, "index": 1, "name": "X"}
+        )
+        response = await ws.receive_json()
+        assert response["error"]["code"] == "unknown_error"
+        assert response["error"]["message"] == "No acknowledgement received"
+    await async_unload_chat(hass, entry)
+
+
+async def test_interface_write_and_request_channel() -> None:
+    interface = MeshInterface(connection=MagicMock())
+    interface._connected_node_info = mesh_pb2.MyNodeInfo(my_node_num=GATEWAY)  # noqa: SLF001
+    interface._connected_node_channels = [channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)]  # noqa: SLF001
+    interface._connected_node_ready.set()  # noqa: SLF001
+    channel = channel_pb2.Channel(index=3, role=channel_pb2.Channel.Role.SECONDARY)
+    channel.settings.name = "Hikers"
+    channel.settings.psk = b"k" * 32
+    response = SimpleNamespace(app_payload=admin_pb2.AdminMessage())
+    response.app_payload.get_channel_response.CopyFrom(channel)
+    interface.send_admin_message_await_response = AsyncMock(return_value=response)
+
+    await interface.write_channel(channel)
+    call = interface.send_admin_message_await_response.call_args
+    assert call.kwargs["node"] is None
+    assert call.kwargs["expect_response"] is False
+    assert call.kwargs["message"].set_channel.settings.name == "Hikers"
+    channels = interface.connected_node_channels()
+    assert [c.index for c in channels] == [0, 1, 2, 3]
+    assert channels[1].role == channel_pb2.Channel.Role.DISABLED
+    assert channels[3].settings.name == "Hikers"
+
+    read = await interface.request_channel(3)
+    assert interface.send_admin_message_await_response.call_args.kwargs["message"].get_channel_request == 4
+    assert read.settings.psk == b"k" * 32
+
+
+async def test_api_client_channel_url_and_write() -> None:
+    client = MeshtasticApiClient.__new__(MeshtasticApiClient)
+    client._logger = MagicMock()  # noqa: SLF001
+    primary = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
+    primary.settings.psk = b"\x01"
+    second = channel_pb2.Channel(index=1, role=channel_pb2.Channel.Role.SECONDARY)
+    second.settings.name = "SOS"
+    second.settings.psk = b"s" * 16
+    local_config = localonly_pb2.LocalConfig()
+    local_config.lora.region = config_pb2.Config.LoRaConfig.RegionCode.EU_868
+    client._interface = SimpleNamespace(  # noqa: SLF001
+        connected_node_channels=lambda: [primary, second, channel_pb2.Channel(index=2)],
+        connected_node_local_config=lambda: local_config,
+        write_channel=AsyncMock(),
+        request_channel=AsyncMock(side_effect=MeshtasticError("timeout")),
+    )
+
+    def decode(url: str) -> apponly_pb2.ChannelSet:
+        encoded = url.split("#", 1)[1]
+        return apponly_pb2.ChannelSet.FromString(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+
+    url = client.channel_url()
+    assert url.startswith("https://meshtastic.org/e/#")
+    channel_set = decode(url)
+    assert [s.name for s in channel_set.settings] == ["", "SOS"]
+    assert channel_set.lora_config.region == config_pb2.Config.LoRaConfig.RegionCode.EU_868
+
+    url_add = client.channel_url([1], add=True)
+    assert url_add.startswith("https://meshtastic.org/e/?add=true#")
+    assert [s.name for s in decode(url_add).settings] == ["SOS"]
+    assert client.channel_url([2]) is None
+
+    stored = await client.async_write_channel(
+        3,
+        role="SECONDARY",
+        name="New",
+        psk=b"k" * 32,
+        uplink_enabled=True,
+        downlink_enabled=False,
+        position_precision=13,
+    )
+    written = client._interface.write_channel.call_args.args[0]  # noqa: SLF001
+    assert written.index == 3
+    assert written.role == channel_pb2.Channel.Role.SECONDARY
+    assert written.settings.uplink_enabled is True
+    assert written.settings.module_settings.position_precision == 13
+    # the read-back failed, so the written channel is reported
+    assert stored["settings"]["name"] == "New"
+    assert stored["settings"]["psk"] == base64.b64encode(b"k" * 32).decode()

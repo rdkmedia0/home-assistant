@@ -10,6 +10,7 @@ import asyncio
 import base64
 import binascii
 import math
+import secrets
 import time
 import uuid
 from enum import StrEnum
@@ -37,6 +38,10 @@ from .api import (
 )
 from .const import (
     CONF_OPTION_CHAT,
+    CONF_OPTION_CHAT_CHANNEL_MANAGEMENT,
+    CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_ADMIN,
+    CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_ALL,
+    CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_DEFAULT,
     CONF_OPTION_CHAT_ENABLE,
     CONF_OPTION_CHAT_ENABLE_DEFAULT,
     CONF_OPTION_CHAT_HISTORY_SIZE,
@@ -194,6 +199,42 @@ NODE_REQUEST_POSITION = "position"
 NODE_REQUEST_TRACEROUTE = "traceroute"
 NODE_REQUESTS = (NODE_REQUEST_TELEMETRY, NODE_REQUEST_POSITION, NODE_REQUEST_TRACEROUTE)
 
+CHANNEL_COUNT = 8
+CHANNEL_NAME_MAX_BYTES = 11
+CHANNEL_ROLE_PRIMARY = "PRIMARY"
+CHANNEL_ROLE_SECONDARY = "SECONDARY"
+CHANNEL_ROLE_DISABLED = "DISABLED"
+CHANNEL_KEY_KEEP = "keep"
+CHANNEL_KEY_NONE = "none"
+CHANNEL_KEY_DEFAULT = "default"
+CHANNEL_KEY_RANDOM = "random"  # new 256 bit key
+CHANNEL_KEY_RANDOM_128 = "random128"
+CHANNEL_KEY_LENGTHS = (0, 1, 16, 32)
+POSITION_PRECISION_FULL = 32
+
+
+def _channel_key(choice: str, current: str | None) -> bytes:
+    """Turn the key choice of the panel into the PSK bytes to store."""
+    if choice == CHANNEL_KEY_KEEP:
+        return base64.b64decode(current) if current else b""
+    if choice == CHANNEL_KEY_NONE:
+        return b""
+    if choice == CHANNEL_KEY_DEFAULT:
+        return b"\x01"
+    if choice == CHANNEL_KEY_RANDOM:
+        return secrets.token_bytes(32)
+    if choice == CHANNEL_KEY_RANDOM_128:
+        return secrets.token_bytes(16)
+    try:
+        key = base64.b64decode(choice, validate=True)
+    except (binascii.Error, ValueError) as e:
+        msg = "The key is not valid base64"
+        raise vol.Invalid(msg) from e
+    if len(key) not in CHANNEL_KEY_LENGTHS:
+        msg = "A key must be empty, 1 byte (default keys), 16 bytes (AES-128) or 32 bytes (AES-256)"
+        raise vol.Invalid(msg)
+    return key
+
 
 class MeshtasticChat:
     """Keeps the message history of one gateway and sends messages on behalf of the chat panel."""
@@ -214,6 +255,18 @@ class MeshtasticChat:
     @property
     def requires_admin(self) -> bool:
         return chat_requires_admin(self.entry)
+
+    @property
+    def channel_management(self) -> str:
+        return chat_options(self.entry).get(
+            CONF_OPTION_CHAT_CHANNEL_MANAGEMENT, CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_DEFAULT
+        )
+
+    def can_manage_channels(self, user: User | None) -> bool:
+        level = self.channel_management
+        if level == CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_ALL:
+            return True
+        return level == CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_ADMIN and user is not None and user.is_admin
 
     @property
     def prefix_sender(self) -> bool:
@@ -355,10 +408,12 @@ class MeshtasticChat:
     async def async_targets(self) -> dict[str, list[dict[str, Any]]]:
         client = self.entry.runtime_data.client
         channels = []
+        used_indexes = set()
         for channel in await client.async_get_channels():
             role = channel.get("role")
-            if role == "DISABLED":
+            if role == CHANNEL_ROLE_DISABLED:
                 continue
+            used_indexes.add(int(channel.get("index", 0)))
             settings = channel.get("settings", {})
             index = int(channel.get("index", 0))
             name = settings.get("name") or ("Primary" if role == "PRIMARY" else f"Channel {index}")
@@ -397,7 +452,8 @@ class MeshtasticChat:
                     "conversation": node_conversation(node_id),
                 }
             )
-        return {"channels": channels, "nodes": nodes}
+        free_indexes = [i for i in range(1, CHANNEL_COUNT) if i not in used_indexes]
+        return {"channels": channels, "nodes": nodes, "free_channel_indexes": free_indexes}
 
     def _device_tracker_entity_id(self, node_id: int) -> str | None:
         unique_id = f"{self.entry.entry_id}_{DEVICE_TRACKER_DOMAIN}_{node_id}_node_position"
@@ -528,6 +584,7 @@ class MeshtasticChat:
         return {
             "index": index,
             "name": settings.get("name") or ("Primary" if role == "PRIMARY" else f"Channel {index}"),
+            "settings_name": settings.get("name", ""),
             "role": role,
             "public": _is_public_channel(settings.get("psk")),
             "key_bytes": _psk_bytes(settings.get("psk")),
@@ -547,7 +604,85 @@ class MeshtasticChat:
             },
             "activity": self.channel_activity(index),
             "conversation": channel_conversation(index),
+            "url": client.channel_url([index], add=True),
+            "url_all": client.channel_url(),
         }
+
+    async def async_set_channel(  # noqa: PLR0913
+        self,
+        index: int,
+        *,
+        role: str | None = None,
+        name: str | None = None,
+        key: str = CHANNEL_KEY_KEEP,
+        uplink_enabled: bool | None = None,
+        downlink_enabled: bool | None = None,
+        position_precision: int | None = None,
+        user: User | None = None,
+    ) -> dict[str, Any]:
+        """
+        Create or change a channel on the gateway; fields left out keep their current value.
+
+        A disabled slot becomes a secondary channel with a fresh AES-256 key unless another key is chosen. The
+        primary channel keeps its role and key: changing those would move the gateway to another mesh, which is
+        left to the apps on purpose.
+        """
+        if not 0 <= index < CHANNEL_COUNT:
+            msg = f"Channel index must be between 0 and {CHANNEL_COUNT - 1}"
+            raise vol.Invalid(msg)
+        client = self.entry.runtime_data.client
+        current = next((c for c in await client.async_get_channels() if int(c.get("index", 0)) == index), None)
+        current_role = (current or {}).get("role", CHANNEL_ROLE_DISABLED)
+        settings = (current or {}).get("settings", {})
+        creating = current_role == CHANNEL_ROLE_DISABLED
+
+        if current_role == CHANNEL_ROLE_PRIMARY:
+            if role not in (None, CHANNEL_ROLE_PRIMARY):
+                msg = "The primary channel cannot be disabled from the chat"
+                raise vol.Invalid(msg)
+            if key != CHANNEL_KEY_KEEP:
+                msg = "The key of the primary channel cannot be changed from the chat; use the Meshtastic app"
+                raise vol.Invalid(msg)
+            new_role = CHANNEL_ROLE_PRIMARY
+        else:
+            if role == CHANNEL_ROLE_PRIMARY:
+                msg = "Only channel 0 can be the primary channel"
+                raise vol.Invalid(msg)
+            new_role = role or CHANNEL_ROLE_SECONDARY
+            if creating and key == CHANNEL_KEY_KEEP:
+                key = CHANNEL_KEY_RANDOM
+
+        new_name = settings.get("name", "") if name is None else name.strip()
+        if len(new_name.encode("utf-8")) > CHANNEL_NAME_MAX_BYTES:
+            msg = f"Channel names are limited to {CHANNEL_NAME_MAX_BYTES} bytes"
+            raise vol.Invalid(msg)
+        precision = settings.get("moduleSettings", {}).get("positionPrecision", 0)
+        if position_precision is not None:
+            precision = position_precision
+        if not 0 <= precision <= POSITION_PRECISION_FULL:
+            msg = "Position precision must be between 0 (off) and 32 (full)"
+            raise vol.Invalid(msg)
+
+        stored = await client.async_write_channel(
+            index,
+            role=new_role,
+            name=new_name,
+            psk=_channel_key(key, settings.get("psk")),
+            uplink_enabled=settings.get("uplinkEnabled", False) if uplink_enabled is None else uplink_enabled,
+            downlink_enabled=settings.get("downlinkEnabled", False) if downlink_enabled is None else downlink_enabled,
+            position_precision=precision,
+        )
+        _LOGGER.info(
+            "Channel %s %s by %s: role %s, name %r",
+            index,
+            "created" if creating else "changed",
+            user.name if user else "an automation",
+            stored.get("role"),
+            stored.get("settings", {}).get("name"),
+        )
+        if stored.get("role") == CHANNEL_ROLE_DISABLED:
+            return {"index": index, "role": CHANNEL_ROLE_DISABLED, "conversation": channel_conversation(index)}
+        return await self.async_channel_details(index)
 
     def prefix_for(self, user: User | None) -> str | None:
         if not self.prefix_sender or user is None:
@@ -754,6 +889,7 @@ def _async_register_websocket_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_chat_node_request)
     websocket_api.async_register_command(hass, websocket_chat_favorite)
     websocket_api.async_register_command(hass, websocket_chat_channel)
+    websocket_api.async_register_command(hass, websocket_chat_channel_set)
 
 
 @websocket_api.websocket_command({vol.Required("type"): "meshtastic/chat/gateways"})
@@ -787,6 +923,7 @@ async def websocket_chat_gateways(
                 "prefix": chat.prefix_for(connection.user),
                 "can_clear": connection.user.is_admin,
                 "can_favorite": connection.user.is_admin,
+                "can_manage_channels": chat.can_manage_channels(connection.user),
                 "conversations": chat.summaries(),
                 **targets,
             }
@@ -966,3 +1103,45 @@ async def websocket_chat_channel(
         connection.send_error(msg["id"], websocket_api.ERR_UNKNOWN_ERROR, str(e) or type(e).__name__)
         return
     connection.send_result(msg["id"], details)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "meshtastic/chat/channel/set",
+        vol.Required("entry_id"): str,
+        vol.Required("index"): vol.All(vol.Coerce(int), vol.Range(min=0, max=CHANNEL_COUNT - 1)),
+        vol.Optional("role"): vol.In((CHANNEL_ROLE_SECONDARY, CHANNEL_ROLE_DISABLED)),
+        vol.Optional("name"): vol.All(str, vol.Length(max=64)),
+        vol.Optional("key", default=CHANNEL_KEY_KEEP): vol.All(str, vol.Length(max=64)),
+        vol.Optional("uplink_enabled"): bool,
+        vol.Optional("downlink_enabled"): bool,
+        vol.Optional("position_precision"): vol.All(vol.Coerce(int), vol.Range(min=0, max=POSITION_PRECISION_FULL)),
+    }
+)
+@websocket_api.async_response
+async def websocket_chat_channel_set(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    if (chat := _get_chat(hass, connection, msg)) is None:
+        return
+    if not chat.can_manage_channels(connection.user):
+        connection.send_error(msg["id"], websocket_api.ERR_UNAUTHORIZED, "Channel management is not enabled for you")
+        return
+    try:
+        result = await chat.async_set_channel(
+            msg["index"],
+            role=msg.get("role"),
+            name=msg.get("name"),
+            key=msg["key"],
+            uplink_enabled=msg.get("uplink_enabled"),
+            downlink_enabled=msg.get("downlink_enabled"),
+            position_precision=msg.get("position_precision"),
+            user=connection.user,
+        )
+    except vol.Invalid as e:
+        connection.send_error(msg["id"], websocket_api.ERR_INVALID_FORMAT, str(e))
+        return
+    except (MeshtasticApiClientError, ValueError, TimeoutError) as e:
+        connection.send_error(msg["id"], websocket_api.ERR_UNKNOWN_ERROR, str(e) or type(e).__name__)
+        return
+    connection.send_result(msg["id"], result)

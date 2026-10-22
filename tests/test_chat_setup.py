@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.meshtastic.chat import DATA_CHAT
@@ -155,7 +156,13 @@ async def test_options_flow_enables_chat(hass: HomeAssistant) -> None:
     assert result["type"] == "create_entry"
     await hass.async_block_till_done()
 
-    assert entry.options["chat"] == {"enable": True, "require_admin": True, "prefix_sender": True, "history_size": 50}
+    assert entry.options["chat"] == {
+        "enable": True,
+        "require_admin": True,
+        "prefix_sender": True,
+        "history_size": 50,
+        "channel_management": "off",
+    }
     assert entry.entry_id in hass.data[DATA_CHAT]
     assert CHAT_PANEL_URL_PATH in hass.data["frontend_panels"]
 
@@ -218,6 +225,52 @@ async def test_send_text_action_without_chat(hass: HomeAssistant) -> None:
 
     await hass.services.async_call(DOMAIN, "send_text", {"text": "hello", "channel": "1", "ack": True}, blocking=True)
     assert client.sent[-1] == {"text": "hello", "to": "^all", "channel": 1, "ack": True}
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.usefixtures("fake_api")
+async def test_options_form_renders_through_http_api(hass: HomeAssistant, hass_client) -> None:
+    """Fetch the options form the way the frontend does: it rejects some selectors that unit tests accept."""
+    assert await async_setup_component(hass, "config", {})
+    entry = _entry({"chat": {"enable": True}})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    client = await hass_client()
+    response = await client.post("/api/config/config_entries/options/flow", json={"handler": entry.entry_id})
+    assert response.status == 200
+    form = await response.json()
+    assert form["type"] == "form"
+    chat_section = next(field for field in form["data_schema"] if field["name"] == "chat")
+    management = next(field for field in chat_section["schema"] if field["name"] == "channel_management")
+    assert management["selector"]["select"]["options"] == ["off", "admin", "all"]
+    assert management["default"] == "off"
+
+    # the chosen level ends up in the options and the chat picks it up
+    response = await client.post(
+        f"/api/config/config_entries/options/flow/{form['flow_id']}",
+        json={
+            "nodes": [],
+            "notify_platform": {"channels": False, "nodes": "none"},
+            "web_client": {"enable": False},
+            "tcp_proxy": {"enable": False, "port": 4403},
+            "chat": {
+                "enable": True,
+                "require_admin": True,
+                "prefix_sender": False,
+                "history_size": 200,
+                "channel_management": "admin",
+            },
+        },
+    )
+    assert response.status == 200
+    assert (await response.json())["type"] == "create_entry"
+    await hass.async_block_till_done()
+    assert entry.options["chat"]["channel_management"] == "admin"
+    assert hass.data[DATA_CHAT][entry.entry_id].channel_management == "admin"
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()

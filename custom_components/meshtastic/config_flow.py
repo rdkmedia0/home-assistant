@@ -17,6 +17,7 @@ from homeassistant.helpers.selector import (
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
+    SelectSelectorMode,
 )
 
 from . import CONF_OPTION_WEB_CLIENT, CURRENT_CONFIG_VERSION_MINOR
@@ -32,6 +33,11 @@ from .const import (
     CONF_CONNECTION_TYPE,
     CONF_OPTION_ADD_ANOTHER_NODE,
     CONF_OPTION_CHAT,
+    CONF_OPTION_CHAT_CHANNEL_MANAGEMENT,
+    CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_ADMIN,
+    CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_ALL,
+    CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_DEFAULT,
+    CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_OFF,
     CONF_OPTION_CHAT_ENABLE,
     CONF_OPTION_CHAT_ENABLE_DEFAULT,
     CONF_OPTION_CHAT_HISTORY_SIZE,
@@ -219,6 +225,20 @@ def _build_chat_schema(
                 CONF_OPTION_CHAT_HISTORY_SIZE,
                 default=options.get(CONF_OPTION_CHAT_HISTORY_SIZE, CONF_OPTION_CHAT_HISTORY_SIZE_DEFAULT),
             ): vol.All(vol.Coerce(int), vol.Range(min=10, max=2000)),
+            vol.Required(
+                CONF_OPTION_CHAT_CHANNEL_MANAGEMENT,
+                default=options.get(CONF_OPTION_CHAT_CHANNEL_MANAGEMENT, CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_DEFAULT),
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_OFF,
+                        CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_ADMIN,
+                        CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_ALL,
+                    ],
+                    translation_key="chat_channel_management",
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
         }
     )
 

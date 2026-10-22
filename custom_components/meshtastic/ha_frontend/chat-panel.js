@@ -33,6 +33,319 @@ const NODE_REQUESTS = {
 
 const COMPASS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
 
+const KEY_CHOICES = [
+  ["keep", "Keep the current key"],
+  ["random", "New random AES-256 key"],
+  ["random128", "New random AES-128 key"],
+  ["default", "Default key (public, anyone can read)"],
+  ["none", "No encryption"],
+  ["custom", "Enter a key (base64)"],
+];
+const PRECISION_BITS = [0, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32];
+const CHANNEL_NAME_MAX_BYTES = 11;
+const precisionToMeters = (bits) => (bits && bits >= 2 ? Math.round(5976446 / 2 ** (bits - 2)) : null);
+const precisionLabel = (bits) => {
+  if (!bits) return "Off – no positions on this channel";
+  if (bits >= 32) return "Full precision";
+  return `About ${formatDistance(precisionToMeters(bits))}`;
+};
+
+// Minimal QR code encoder (byte mode, error correction level M, versions 1-20) used to show channel URLs.
+// Returns a square array of booleans (true = dark module). Follows ISO 18004 / Nayuki's reference structure.
+
+const QR_EC_CODEWORDS_PER_BLOCK_M = [0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26];
+const QR_EC_BLOCKS_M = [0, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16];
+const QR_MAX_VERSION = 20;
+
+const qrTotalCodewords = (version) => {
+  let result = (16 * version + 128) * version + 64;
+  if (version >= 2) {
+    const align = Math.floor(version / 7) + 2;
+    result -= (25 * align - 10) * align - 55;
+    if (version >= 7) result -= 36;
+  }
+  return Math.floor(result / 8);
+};
+
+const qrDataCodewords = (version) =>
+  qrTotalCodewords(version) - QR_EC_CODEWORDS_PER_BLOCK_M[version] * QR_EC_BLOCKS_M[version];
+
+const qrAlignmentPositions = (version) => {
+  if (version === 1) return [];
+  const count = Math.floor(version / 7) + 2;
+  const size = version * 4 + 17;
+  const step = version === 32 ? 26 : Math.ceil((version * 4 + 4) / (count * 2 - 2)) * 2;
+  const result = [6];
+  for (let pos = size - 7; result.length < count; pos -= step) result.splice(1, 0, pos);
+  return result;
+};
+
+const gfMultiply = (x, y) => {
+  let z = 0;
+  for (let i = 7; i >= 0; i--) {
+    z = (z << 1) ^ ((z >>> 7) * 0x11d);
+    z ^= ((y >>> i) & 1) * x;
+  }
+  return z & 0xff;
+};
+
+const reedSolomonRemainder = (data, degree) => {
+  const divisor = new Array(degree).fill(0);
+  divisor[degree - 1] = 1;
+  let root = 1;
+  for (let i = 0; i < degree; i++) {
+    for (let j = 0; j < degree; j++) {
+      divisor[j] = gfMultiply(divisor[j], root);
+      if (j + 1 < degree) divisor[j] ^= divisor[j + 1];
+    }
+    root = gfMultiply(root, 0x02);
+  }
+  const result = new Array(degree).fill(0);
+  for (const b of data) {
+    const factor = b ^ result.shift();
+    result.push(0);
+    divisor.forEach((coef, i) => {
+      result[i] ^= gfMultiply(coef, factor);
+    });
+  }
+  return result;
+};
+
+const qrEncode = (text, { forceMask = -1 } = {}) => {
+  const bytes = Array.from(new TextEncoder().encode(text));
+  let version = 1;
+  while (version <= QR_MAX_VERSION) {
+    const countBits = version < 10 ? 8 : 16;
+    if (4 + countBits + bytes.length * 8 <= qrDataCodewords(version) * 8) break;
+    version++;
+  }
+  if (version > QR_MAX_VERSION) return null;
+
+  // data bit stream: mode, count, bytes, terminator, padding
+  const bits = [];
+  const push = (value, length) => {
+    for (let i = length - 1; i >= 0; i--) bits.push((value >>> i) & 1);
+  };
+  push(4, 4);
+  push(bytes.length, version < 10 ? 8 : 16);
+  for (const b of bytes) push(b, 8);
+  const capacity = qrDataCodewords(version) * 8;
+  push(0, Math.min(4, capacity - bits.length));
+  while (bits.length % 8) bits.push(0);
+  for (let pad = 0xec; bits.length < capacity; pad ^= 0xec ^ 0x11) push(pad, 8);
+  const data = [];
+  for (let i = 0; i < bits.length; i += 8) data.push(parseInt(bits.slice(i, i + 8).join(""), 2));
+
+  // split into blocks, add error correction, interleave
+  const blocks = QR_EC_BLOCKS_M[version];
+  const ecLength = QR_EC_CODEWORDS_PER_BLOCK_M[version];
+  const total = qrTotalCodewords(version);
+  const shortBlocks = blocks - (total % blocks);
+  const shortLength = Math.floor(total / blocks) - ecLength;
+  const dataBlocks = [];
+  const ecBlocks = [];
+  for (let i = 0, offset = 0; i < blocks; i++) {
+    const length = shortLength + (i < shortBlocks ? 0 : 1);
+    const block = data.slice(offset, offset + length);
+    offset += length;
+    dataBlocks.push(block);
+    ecBlocks.push(reedSolomonRemainder(block, ecLength));
+  }
+  const codewords = [];
+  for (let i = 0; i <= shortLength; i++) {
+    dataBlocks.forEach((block) => {
+      if (i < block.length) codewords.push(block[i]);
+    });
+  }
+  for (let i = 0; i < ecLength; i++) ecBlocks.forEach((block) => codewords.push(block[i]));
+
+  // modules
+  const size = version * 4 + 17;
+  const modules = Array.from({ length: size }, () => new Array(size).fill(false));
+  const reserved = Array.from({ length: size }, () => new Array(size).fill(false));
+  const set = (x, y, dark) => {
+    modules[y][x] = dark;
+    reserved[y][x] = true;
+  };
+  const finder = (x, y) => {
+    for (let dy = -4; dy <= 4; dy++) {
+      for (let dx = -4; dx <= 4; dx++) {
+        const xx = x + dx;
+        const yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= size || yy >= size) continue;
+        const dist = Math.max(Math.abs(dx), Math.abs(dy));
+        set(xx, yy, dist !== 2 && dist !== 4);
+      }
+    }
+  };
+  finder(3, 3);
+  finder(size - 4, 3);
+  finder(3, size - 4);
+  for (let i = 0; i < size; i++) {
+    if (!reserved[6][i]) set(i, 6, i % 2 === 0);
+    if (!reserved[i][6]) set(6, i, i % 2 === 0);
+  }
+  const positions = qrAlignmentPositions(version);
+  positions.forEach((cx, i) => {
+    positions.forEach((cy, j) => {
+      const corner = (i === 0 && j === 0) || (i === 0 && j === positions.length - 1) || (i === positions.length - 1 && j === 0);
+      if (corner) return;
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) set(cx + dx, cy + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+      }
+    });
+  });
+  const drawFormat = (mask) => {
+    let rem = (0 << 3) | mask; // level M = 00
+    const value = rem;
+    for (let i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
+    const format = ((value << 10) | rem) ^ 0x5412;
+    const bit = (i) => ((format >>> i) & 1) === 1;
+    for (let i = 0; i <= 5; i++) set(8, i, bit(i));
+    set(8, 7, bit(6));
+    set(8, 8, bit(7));
+    set(7, 8, bit(8));
+    for (let i = 9; i < 15; i++) set(14 - i, 8, bit(i));
+    for (let i = 0; i < 8; i++) set(size - 1 - i, 8, bit(i));
+    for (let i = 8; i < 15; i++) set(8, size - 15 + i, bit(i));
+    set(8, size - 8, true);
+  };
+  drawFormat(0);
+  if (version >= 7) {
+    let rem = version;
+    for (let i = 0; i < 12; i++) rem = (rem << 1) ^ ((rem >>> 11) * 0x1f25);
+    const info = (version << 12) | rem;
+    for (let i = 0; i < 18; i++) {
+      const dark = ((info >>> i) & 1) === 1;
+      const a = size - 11 + (i % 3);
+      const b = Math.floor(i / 3);
+      set(a, b, dark);
+      set(b, a, dark);
+    }
+  }
+
+  // place codewords in the zigzag order
+  let bitIndex = 0;
+  for (let right = size - 1; right >= 1; right -= 2) {
+    if (right === 6) right = 5;
+    for (let vert = 0; vert < size; vert++) {
+      for (let j = 0; j < 2; j++) {
+        const x = right - j;
+        const upward = ((right + 1) & 2) === 0;
+        const y = upward ? size - 1 - vert : vert;
+        if (reserved[y][x] || bitIndex >= codewords.length * 8) continue;
+        modules[y][x] = ((codewords[bitIndex >>> 3] >>> (7 - (bitIndex & 7))) & 1) === 1;
+        bitIndex++;
+      }
+    }
+  }
+
+  // masking: apply each mask, score it, keep the best
+  const maskBit = (mask, x, y) => {
+    switch (mask) {
+      case 0: return (x + y) % 2 === 0;
+      case 1: return y % 2 === 0;
+      case 2: return x % 3 === 0;
+      case 3: return (x + y) % 3 === 0;
+      case 4: return (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0;
+      case 5: return ((x * y) % 2) + ((x * y) % 3) === 0;
+      case 6: return (((x * y) % 2) + ((x * y) % 3)) % 2 === 0;
+      default: return (((x + y) % 2) + ((x * y) % 3)) % 2 === 0;
+    }
+  };
+  const applyMask = (mask) => {
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) if (!reserved[y][x] && maskBit(mask, x, y)) modules[y][x] = !modules[y][x];
+    }
+  };
+  const penalty = () => {
+    let result = 0;
+    const runPenalty = (history) => {
+      const n = history[1];
+      if (n === 0 || history[2] !== n || history[3] !== n * 3 || history[4] !== n || history[5] !== n) return 0;
+      return (history[0] >= n * 4 ? 1 : 0) + (history[6] >= n * 4 ? 1 : 0);
+    };
+    const line = (get) => {
+      let runColor = false;
+      let runLength = 0;
+      const history = [0, 0, 0, 0, 0, 0, 0];
+      const addRun = (len) => {
+        if (!runColor) {
+          history.pop();
+          history.unshift(len);
+          result += runPenalty(history) * 40;
+        } else {
+          history.pop();
+          history.unshift(len);
+        }
+      };
+      for (let i = 0; i < size; i++) {
+        const c = get(i);
+        if (c === runColor) {
+          runLength++;
+          if (runLength === 5) result += 3;
+          else if (runLength > 5) result++;
+        } else {
+          addRun(runLength);
+          runColor = c;
+          runLength = 1;
+        }
+      }
+      addRun(runLength);
+      if (runColor) {
+        history.pop();
+        history.unshift(0);
+        result += runPenalty(history) * 40;
+      }
+    };
+    // the reference pads each line with light modules before checking finder-like patterns; emulate by a leading 0
+    for (let y = 0; y < size; y++) line((x) => modules[y][x]);
+    for (let x = 0; x < size; x++) line((y) => modules[y][x]);
+    for (let y = 0; y < size - 1; y++) {
+      for (let x = 0; x < size - 1; x++) {
+        const c = modules[y][x];
+        if (c === modules[y][x + 1] && c === modules[y + 1][x] && c === modules[y + 1][x + 1]) result += 3;
+      }
+    }
+    let dark = 0;
+    for (const row of modules) for (const m of row) if (m) dark++;
+    const k = Math.ceil(Math.abs(dark * 20 - size * size * 10) / (size * size)) - 1;
+    result += k * 10;
+    return result;
+  };
+  let best = forceMask;
+  if (best < 0) {
+    let bestScore = Infinity;
+    for (let mask = 0; mask < 8; mask++) {
+      applyMask(mask);
+      drawFormat(mask);
+      const score = penalty();
+      if (score < bestScore) {
+        bestScore = score;
+        best = mask;
+      }
+      applyMask(mask);
+    }
+  }
+  applyMask(best);
+  drawFormat(best);
+  return modules;
+};
+
+const qrSvg = (text, { module = 4, margin = 4 } = {}) => {
+  const modules = qrEncode(text);
+  if (!modules) return "";
+  const size = modules.length;
+  const total = (size + margin * 2) * module;
+  let path = "";
+  modules.forEach((row, y) => {
+    row.forEach((dark, x) => {
+      if (dark) path += `M${(x + margin) * module} ${(y + margin) * module}h${module}v${module}h-${module}z`;
+    });
+  });
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/><path d="${path}" fill="#000"/></svg>`;
+};
+
 const escapeHtml = (value) =>
   String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -576,6 +889,168 @@ class MeshtasticChatPanel extends HTMLElement {
     this._openDetails(info.kind, info.kind === "channel" ? info.index : info.num);
   }
 
+  _openNewChannel() {
+    const gateway = this._gateway();
+    if (!gateway || !gateway.can_manage_channels || !(gateway.free_channel_indexes || []).length) return;
+    this._hideTooltip();
+    this._details = {
+      kind: "new-channel",
+      id: gateway.free_channel_indexes[0],
+      entryId: gateway.entry_id,
+      data: {},
+      error: null,
+      loading: false,
+      busy: null,
+      results: {},
+    };
+    this._applyLayout();
+    this._renderDetails();
+    const name = this._detailsEl.querySelector("input[name=name]");
+    if (name) name.focus();
+  }
+
+  // ---------- channel management ----------
+
+  _channelFormValues(form) {
+    const values = {
+      index: Number(form.dataset.index),
+      name: form.elements.name.value.trim(),
+      key: form.elements.key ? form.elements.key.value : "keep",
+      uplink_enabled: form.elements.uplink_enabled.checked,
+      downlink_enabled: form.elements.downlink_enabled.checked,
+      position_precision: Number(form.elements.position_precision.value),
+    };
+    if (values.key === "custom") values.key = form.elements.custom_key.value.trim();
+    if (form.elements.index) values.index = Number(form.elements.index.value);
+    return values;
+  }
+
+  _keyDescription(key) {
+    const known = KEY_CHOICES.find(([value]) => value === key);
+    return known ? known[1].charAt(0).toLowerCase() + known[1].slice(1) : "the entered key";
+  }
+
+  async _saveChannel(form) {
+    const details = this._details;
+    const gateway = this._gateway();
+    if (!details || !gateway || details.busy) return;
+    const values = this._channelFormValues(form);
+    if (utf8Length(values.name) > CHANNEL_NAME_MAX_BYTES) {
+      this._showError(`Channel names are limited to ${CHANNEL_NAME_MAX_BYTES} bytes`);
+      return;
+    }
+    const creating = details.kind === "new-channel";
+    const current = creating ? null : details.data;
+    const message = { type: "meshtastic/chat/channel/set", entry_id: gateway.entry_id, index: values.index };
+    const changes = [];
+    if (creating) {
+      message.role = "SECONDARY";
+      message.name = values.name;
+      message.key = values.key;
+      message.uplink_enabled = values.uplink_enabled;
+      message.downlink_enabled = values.downlink_enabled;
+      message.position_precision = values.position_precision;
+    } else {
+      if (values.name !== (current.settings_name || "")) {
+        message.name = values.name;
+        changes.push(`name: "${current.settings_name || ""}" → "${values.name}"`);
+      }
+      if (values.key !== "keep") {
+        message.key = values.key;
+        changes.push(`key: ${this._keyDescription(values.key)} – devices with the old key will no longer read this channel`);
+      }
+      if (values.uplink_enabled !== !!current.uplink_enabled) {
+        message.uplink_enabled = values.uplink_enabled;
+        changes.push(`uplink to MQTT: ${values.uplink_enabled ? "on" : "off"}`);
+      }
+      if (values.downlink_enabled !== !!current.downlink_enabled) {
+        message.downlink_enabled = values.downlink_enabled;
+        changes.push(`downlink from MQTT: ${values.downlink_enabled ? "on" : "off"}`);
+      }
+      if (values.position_precision !== (current.position_precision_bits || 0)) {
+        message.position_precision = values.position_precision;
+        changes.push(`position sharing: ${precisionLabel(values.position_precision).toLowerCase()}`);
+      }
+      if (!changes.length) {
+        this._showError("Nothing changed");
+        return;
+      }
+    }
+    const gatewayName = gateway.gateway.long_name || gateway.title;
+    const prompt = creating
+      ? `Create channel ${values.index} "${values.name}" on ${gatewayName} with ${this._keyDescription(values.key)}?\n\nThe gateway applies it immediately.`
+      : `Save these changes to channel ${values.index} "${current.name}" on ${gatewayName}?\n\n${changes
+          .map((c) => `• ${c}`)
+          .join("\n")}\n\nThe gateway applies them immediately.`;
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(prompt)) return;
+    await this._applyChannel(message, details, creating ? "Creating…" : "Saving…");
+  }
+
+  async _disableChannel() {
+    const details = this._details;
+    const gateway = this._gateway();
+    if (!details || details.kind !== "channel" || !gateway || details.busy) return;
+    const name = details.data ? details.data.name : `Channel ${details.id}`;
+    // eslint-disable-next-line no-alert
+    if (
+      !window.confirm(
+        `Disable channel ${details.id} "${name}" on ${gateway.gateway.long_name || gateway.title}?\n\nThe gateway stops sending and receiving on it. The stored history stays and the channel can be created again later.`
+      )
+    ) {
+      return;
+    }
+    await this._applyChannel(
+      { type: "meshtastic/chat/channel/set", entry_id: gateway.entry_id, index: details.id, role: "DISABLED" },
+      details,
+      "Disabling…"
+    );
+  }
+
+  async _applyChannel(message, details, busyLabel) {
+    details.busy = busyLabel;
+    this._renderDetails();
+    let result;
+    try {
+      result = await this._hass.callWS(message);
+    } catch (err) {
+      details.busy = null;
+      if (this._details === details) this._renderDetails();
+      this._showError(err.message || String(err));
+      return;
+    }
+    details.busy = null;
+    await this._loadGateways();
+    if (this._details !== details) return;
+    if (result.role === "DISABLED") {
+      this._closeDetails({ render: false });
+      if (this._conversation === result.conversation) this._selectConversation(this._defaultConversation(this._gateway()), { showThread: false });
+      this._render();
+      return;
+    }
+    // show the stored channel; a new channel also becomes the open conversation
+    this._details = { ...details, kind: "channel", id: result.index, data: result, error: null, loading: false };
+    if (this._conversation !== result.conversation) {
+      this._conversation = result.conversation;
+      this._showThread = !this._narrow;
+      this._persisted.conversation = this._persisted.conversation || {};
+      this._persisted.conversation[this._entryId] = result.conversation;
+      saveState(this._persisted);
+      if (!this._messages.has(`${this._entryId}|${result.conversation}`)) this._loadHistory(this._entryId, result.conversation).then(() => this._renderMessages({ stickToBottom: true }));
+    }
+    this._applyLayout();
+    this._render();
+  }
+
+  async _copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      this._showError("Link copied");
+    } catch (e) {
+      this._showError("Could not copy – select the link and copy it by hand");
+    }
+  }
+
   async _openDetails(kind, id) {
     const gateway = this._gateway();
     if (!gateway) return;
@@ -817,6 +1292,11 @@ class MeshtasticChatPanel extends HTMLElement {
     });
 
     const activate = (ev) => {
+      if (ev.target.closest("[data-action=new-channel]")) {
+        ev.preventDefault();
+        this._openNewChannel();
+        return;
+      }
       const star = ev.target.closest("[data-action=favorite]");
       if (star) {
         ev.preventDefault();
@@ -869,6 +1349,14 @@ class MeshtasticChatPanel extends HTMLElement {
       else if (dataset.action === "navigate") this._navigate(dataset.href);
       else if (dataset.action === "more-info") this._moreInfo(dataset.entity);
       else if (dataset.action === "open-conversation") this._selectConversation(dataset.conversation);
+      else if (dataset.action === "copy") this._copyText(dataset.text);
+      else if (dataset.action === "disable-channel") this._disableChannel();
+    });
+    this._detailsEl.addEventListener("submit", (ev) => {
+      const form = ev.target.closest("form.channel-form");
+      if (!form) return;
+      ev.preventDefault();
+      this._saveChannel(form);
     });
     this._detailsEl.addEventListener("keydown", (ev) => {
       if ((ev.key === "Enter" || ev.key === " ") && ev.target.closest("[data-action=favorite]")) {
@@ -878,6 +1366,12 @@ class MeshtasticChatPanel extends HTMLElement {
     });
     this._detailsEl.addEventListener("change", (ev) => {
       if (ev.target.matches("select.telemetry-type")) this._telemetryType = ev.target.value;
+      if (ev.target.matches("select[name=key]")) {
+        const custom = ev.target.form.elements.custom_key;
+        custom.hidden = ev.target.value !== "custom";
+        if (!custom.hidden) custom.focus();
+      }
+      if (ev.target.matches("select[name=index]") && this._details) this._details.id = Number(ev.target.value);
     });
 
     this._messagesEl.addEventListener("click", (ev) => {
@@ -984,9 +1478,14 @@ class MeshtasticChatPanel extends HTMLElement {
       ? ""
       : `<p class="empty warning">The gateway is not connected. History is still available.</p>`;
 
+    const canCreate = gateway.can_manage_channels && (gateway.free_channel_indexes || []).length > 0;
     this._listEl.innerHTML = `
       ${unavailable}
-      <h2>Channels</h2>
+      <h2>Channels${
+        canCreate
+          ? `<button class="h2-action" data-action="new-channel" aria-label="New channel" title="New channel"><ha-icon icon="mdi:plus"></ha-icon></button>`
+          : ""
+      }</h2>
       ${channelItems || `<p class="empty">No matching channels</p>`}
       <h2>Direct messages</h2>
       ${nodeItems || `<p class="empty">No matching nodes</p>`}
@@ -1183,7 +1682,14 @@ class MeshtasticChatPanel extends HTMLElement {
     const subject = data || info;
 
     let header;
-    if (details.kind === "channel") {
+    if (details.kind === "new-channel") {
+      header = `
+        <span class="avatar channel" aria-hidden="true"><ha-icon icon="mdi:plus"></ha-icon></span>
+        <div class="details-title">
+          <div class="name">New channel</div>
+          <div class="subtitle">on ${escapeHtml(gateway.gateway.long_name || gateway.title)}</div>
+        </div>`;
+    } else if (details.kind === "channel") {
       header = `
         ${this._channelAvatar(subject)}
         <div class="details-title">
@@ -1205,10 +1711,12 @@ class MeshtasticChatPanel extends HTMLElement {
     let body;
     if (details.error) {
       body = `<p class="empty">${escapeHtml(details.error)}</p>`;
+    } else if (details.kind === "new-channel") {
+      body = this._channelForm(null, details);
     } else if (!data) {
       body = `<p class="empty">Loading…</p>`;
     } else if (details.kind === "channel") {
-      body = this._channelDetailsBody(data);
+      body = this._channelDetailsBody(data, details);
     } else {
       body = this._nodeDetailsBody(data, details);
     }
@@ -1421,7 +1929,83 @@ class MeshtasticChatPanel extends HTMLElement {
     return html;
   }
 
-  _channelDetailsBody(channel) {
+  _channelForm(channel, details) {
+    const gateway = this._gateway();
+    const creating = !channel;
+    const primary = !creating && channel.role === "PRIMARY";
+    const busy = details.busy;
+    const currentBits = creating ? 32 : channel.position_precision_bits || 0;
+    const bits = PRECISION_BITS.includes(currentBits) ? PRECISION_BITS : [...PRECISION_BITS, currentBits].sort((a, b) => a - b);
+    const precisionOptions = bits
+      .map((b) => `<option value="${b}" ${b === currentBits ? "selected" : ""}>${escapeHtml(precisionLabel(b))}</option>`)
+      .join("");
+    const keyOptions = KEY_CHOICES.filter(([value]) => (creating ? value !== "keep" : true))
+      .map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`)
+      .join("");
+    const indexField = creating
+      ? `<label>Slot
+           <select name="index">${(gateway.free_channel_indexes || [])
+             .map((i) => `<option value="${i}" ${i === details.id ? "selected" : ""}>Channel ${i}</option>`)
+             .join("")}</select>
+         </label>`
+      : "";
+    const keyField = primary
+      ? `<p class="hint">The key of the primary channel can only be changed in the Meshtastic app: a wrong key cuts the gateway off the mesh.</p>`
+      : `<label>Key
+           <select name="key" ${busy ? "disabled" : ""}>${keyOptions}</select>
+         </label>
+         <input name="custom_key" placeholder="Key in base64 (16 or 32 bytes)" aria-label="Key in base64" hidden ${busy ? "disabled" : ""}>`;
+    return `
+      <h3>${creating ? "Settings" : "Edit channel"}</h3>
+      <form class="channel-form" data-index="${creating ? details.id : channel.index}">
+        ${indexField}
+        <label>Name
+          <input name="name" maxlength="${CHANNEL_NAME_MAX_BYTES}" value="${escapeHtml(creating ? "" : channel.settings_name || "")}" placeholder="${
+            creating ? "Up to 11 characters" : "Empty keeps the default name"
+          }" ${busy ? "disabled" : ""}>
+        </label>
+        ${keyField}
+        <label class="check"><input type="checkbox" name="uplink_enabled" ${!creating && channel.uplink_enabled ? "checked" : ""} ${busy ? "disabled" : ""}> Uplink to MQTT</label>
+        <label class="check"><input type="checkbox" name="downlink_enabled" ${!creating && channel.downlink_enabled ? "checked" : ""} ${busy ? "disabled" : ""}> Downlink from MQTT</label>
+        <label>Position sharing
+          <select name="position_precision" ${busy ? "disabled" : ""}>${precisionOptions}</select>
+        </label>
+        <div class="actions">
+          <button type="submit" class="chip-button primary" ${busy ? "disabled" : ""}>
+            <ha-icon icon="${creating ? "mdi:plus" : "mdi:content-save-outline"}"></ha-icon>${busy || (creating ? "Create channel" : "Save changes")}
+          </button>
+          ${
+            !creating && !primary
+              ? `<button type="button" class="chip-button danger" data-action="disable-channel" ${busy ? "disabled" : ""}>
+                   <ha-icon icon="mdi:cancel"></ha-icon>Disable channel
+                 </button>`
+              : ""
+          }
+        </div>
+        <p class="hint">Changes are confirmed before they are sent and the gateway applies them immediately.</p>
+      </form>`;
+  }
+
+  _channelShare(channel) {
+    if (!channel.url) return "";
+    return `
+      <h3>Share</h3>
+      <div class="qr" role="img" aria-label="QR code with the settings of this channel">${qrSvg(channel.url)}</div>
+      <p class="hint">Scan with the Meshtastic app to add this channel. The code contains the key, so share it only with people who should read the channel.</p>
+      <div class="actions">
+        <button class="chip-button" data-action="copy" data-text="${escapeHtml(channel.url)}"><ha-icon icon="mdi:content-copy"></ha-icon>Copy link</button>
+        <a class="chip-button" href="${escapeHtml(channel.url)}" target="_blank" rel="noopener"><ha-icon icon="mdi:open-in-new"></ha-icon>Open link</a>
+        ${
+          channel.url_all
+            ? `<button class="chip-button" data-action="copy" data-text="${escapeHtml(channel.url_all)}"><ha-icon icon="mdi:content-copy"></ha-icon>Copy link with all channels</button>`
+            : ""
+        }
+      </div>`;
+  }
+
+  _channelDetailsBody(channel, details) {
+    const gateway = this._gateway();
+    const manage = gateway && gateway.can_manage_channels;
     const onOff = (value) => (value ? "on" : "off");
     let encryption;
     if (channel.public) {
@@ -1492,7 +2076,8 @@ class MeshtasticChatPanel extends HTMLElement {
            .join("")}</div>`
       : "";
 
-    return settings + mqtt + mqttHint + radio + activity + nodes;
+    const management = manage ? this._channelForm(channel, details) + this._channelShare(channel) : "";
+    return settings + mqtt + mqttHint + radio + activity + nodes + management;
   }
 
   static get styles() {
@@ -1934,6 +2519,42 @@ class MeshtasticChatPanel extends HTMLElement {
       .empty.center { text-align: center; padding: 48px 16px; }
       .empty.warning { color: var(--warning-color, #ffa600); }
       .details .empty { padding: 24px 0; }
+
+      .conversations h2 { display: flex; align-items: center; gap: 4px; }
+      .h2-action {
+        width: 24px;
+        height: 24px;
+        margin-left: auto;
+        border: none;
+        border-radius: 50%;
+        background: none;
+        color: var(--primary-color);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        --mdc-icon-size: 18px;
+      }
+      .h2-action:hover { background: var(--secondary-background-color); }
+      .channel-form { display: flex; flex-direction: column; gap: 10px; }
+      .channel-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--secondary-text-color); }
+      .channel-form label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--primary-text-color); font-size: 14px; }
+      .channel-form input[type=text], .channel-form input:not([type]), .channel-form select {
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--divider-color);
+        background: var(--card-background-color);
+        color: var(--primary-text-color);
+        font: inherit;
+        font-size: 14px;
+        min-width: 0;
+      }
+      .channel-form input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--primary-color); }
+      .channel-form .actions { margin-top: 4px; }
+      .chip-button.danger { color: var(--error-color, #db4437); }
+      a.chip-button { text-decoration: none; color: inherit; }
+      .qr { width: 180px; max-width: 100%; margin: 8px auto; padding: 8px; background: #fff; border-radius: 8px; }
+      .qr svg { display: block; width: 100%; height: auto; }
 
       /* medium widths: the details pane floats over the conversation instead of squeezing it */
       @container (max-width: 1000px) {

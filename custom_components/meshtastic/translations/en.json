@@ -58,8 +58,7 @@
           "serial_port": "Path to serial port, e.g. /dev/ttyUSB0"
         }
       },
-      "reconfigure": {
-      },
+      "reconfigure": {},
       "node": {
         "description": "Configure which nodes should be imported",
         "data": {
@@ -98,12 +97,14 @@
           "enable": "Enable Chat",
           "require_admin": "Only administrators can use the chat",
           "prefix_sender": "Prefix messages with the sender's name",
-          "history_size": "Messages kept per conversation"
+          "history_size": "Messages kept per conversation",
+          "channel_management": "Channel management from the chat"
         },
         "data_description": {
           "require_admin": "Turn off to let every Home Assistant user read and send messages through this gateway.",
           "prefix_sender": "Messages sent from Home Assistant all come from the gateway node. Turn on to add the Home Assistant user's name, e.g. \"Alex B.: on my way\", so others on the mesh know who wrote it.",
-          "history_size": "Older messages are removed once a channel or direct message conversation reaches this size."
+          "history_size": "Older messages are removed once a channel or direct message conversation reaches this size.",
+          "channel_management": "Lets users create, rename, re-key, enable or disable channels on this gateway from the channel details in the chat. Every change is confirmed first. Off: channels are read-only in the chat."
         }
       }
     },
@@ -164,12 +165,14 @@
               "enable": "Enable Chat",
               "require_admin": "Only administrators can use the chat",
               "prefix_sender": "Prefix messages with the sender's name",
-              "history_size": "Messages kept per conversation"
+              "history_size": "Messages kept per conversation",
+              "channel_management": "Channel management from the chat"
             },
             "data_description": {
               "require_admin": "Turn off to let every Home Assistant user read and send messages through this gateway.",
               "prefix_sender": "Messages sent from Home Assistant all come from the gateway node. Turn on to add the Home Assistant user's name, e.g. \"Alex B.: on my way\", so others on the mesh know who wrote it.",
-              "history_size": "Older messages are removed once a channel or direct message conversation reaches this size."
+              "history_size": "Older messages are removed once a channel or direct message conversation reaches this size.",
+              "channel_management": "Lets users create, rename, re-key, enable or disable channels on this gateway from the channel details in the chat. Every change is confirmed first. Off: channels are read-only in the chat."
             }
           }
         }
@@ -334,6 +337,13 @@
         "none": "None of the Nodes",
         "all": "All known and newly discovered Nodes",
         "selected": "Only the selected Nodes"
+      }
+    },
+    "chat_channel_management": {
+      "options": {
+        "off": "Off (read-only)",
+        "admin": "Administrators only",
+        "all": "All chat users"
       }
     }
   },

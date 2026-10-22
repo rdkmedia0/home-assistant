@@ -906,6 +906,33 @@ class MeshInterface:
 
         await self.send_admin_message_await_response(node=node, message=admin_message, expect_response=False)
 
+    async def write_channel(self, channel: channel_pb2.Channel, node: int | None = None) -> None:
+        """Store a channel on ``node`` (default: own node); the firmware applies it without a reboot."""
+        admin_message = admin_pb2.AdminMessage()
+        admin_message.set_channel.CopyFrom(channel)
+        await self.send_admin_message_await_response(node=node, message=admin_message, expect_response=False)
+        if node is None:
+            self._store_connected_node_channel(channel)
+
+    async def request_channel(self, index: int, node: int | None = None) -> channel_pb2.Channel:
+        """Read a channel back from ``node`` (default: own node) and refresh the local copy."""
+        admin_message = admin_pb2.AdminMessage()
+        admin_message.get_channel_request = index + 1
+        response = await self.send_admin_message_await_response(node=node, message=admin_message)
+        channel = response.app_payload.get_channel_response
+        if node is None:
+            self._store_connected_node_channel(channel)
+        return channel
+
+    def _store_connected_node_channel(self, channel: channel_pb2.Channel) -> None:
+        if self._connected_node_channels is None:
+            return
+        while len(self._connected_node_channels) <= channel.index:
+            self._connected_node_channels.append(channel_pb2.Channel(index=len(self._connected_node_channels)))
+        stored = channel_pb2.Channel()
+        stored.CopyFrom(channel)
+        self._connected_node_channels[channel.index] = stored
+
     async def set_favorite_node(self, node_id: int, *, favorite: bool = True, node: int | None = None) -> None:
         """Mark ``node_id`` as a favorite (or remove the mark) in the node database of ``node`` (default: own node)."""
         admin_message = admin_pb2.AdminMessage()

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 from copy import deepcopy
 from datetime import timedelta
@@ -31,7 +32,7 @@ from .aiomeshtastic import (
     TcpConnection as AioTcpConnection,
 )
 from .aiomeshtastic.errors import MeshRoutingError, MeshtasticError
-from .aiomeshtastic.protobuf import mesh_pb2, portnums_pb2
+from .aiomeshtastic.protobuf import apponly_pb2, channel_pb2, mesh_pb2, portnums_pb2
 from .const import (
     CONF_CONNECTION_BLUETOOTH_ADDRESS,
     CONF_CONNECTION_SERIAL_PORT,
@@ -44,7 +45,7 @@ from .const import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine, Mapping, MutableMapping
+    from collections.abc import Coroutine, Iterable, Mapping, MutableMapping
     from types import MappingProxyType, TracebackType
 
     from google.protobuf.message import Message
@@ -424,3 +425,54 @@ class MeshtasticApiClient:
             await self._interface.set_favorite_node(node, favorite=favorite)
         except MeshtasticError as e:
             raise MeshtasticApiClientError(str(e)) from e
+
+    async def async_write_channel(  # noqa: PLR0913
+        self,
+        index: int,
+        *,
+        role: str,
+        name: str,
+        psk: bytes,
+        uplink_enabled: bool,
+        downlink_enabled: bool,
+        position_precision: int,
+    ) -> Mapping[str, Any]:
+        """Write a channel to the gateway and return the channel as the gateway stored it."""
+        channel = channel_pb2.Channel(index=index, role=channel_pb2.Channel.Role.Value(role))
+        channel.settings.name = name
+        channel.settings.psk = psk
+        channel.settings.uplink_enabled = uplink_enabled
+        channel.settings.downlink_enabled = downlink_enabled
+        channel.settings.module_settings.position_precision = position_precision
+        try:
+            await self._interface.write_channel(channel)
+        except MeshtasticError as e:
+            raise MeshtasticApiClientError(str(e)) from e
+        try:
+            stored = await self._interface.request_channel(index)
+        except MeshtasticError:
+            self._logger.debug("Could not read channel %s back after writing it", index, exc_info=True)
+            stored = channel
+        return self._message_to_dict(stored)
+
+    def channel_url(self, indexes: Iterable[int] | None = None, *, add: bool = False) -> str | None:
+        """
+        Build a meshtastic.org channel URL (the one the apps show as QR code).
+
+        ``indexes`` limits the URL to those channels; ``add`` marks it as "add these channels" instead of
+        "replace all channels" for the app that scans it. None if no enabled channel matches.
+        """
+        channel_set = apponly_pb2.ChannelSet()
+        for channel in self._interface.connected_node_channels() or []:
+            if channel.role == channel_pb2.Channel.Role.DISABLED:
+                continue
+            if indexes is not None and channel.index not in indexes:
+                continue
+            channel_set.settings.append(channel.settings)
+        if not channel_set.settings:
+            return None
+        local_config = self._interface.connected_node_local_config()
+        if local_config is not None:
+            channel_set.lora_config.CopyFrom(local_config.lora)
+        encoded = base64.urlsafe_b64encode(channel_set.SerializeToString()).decode("ascii").rstrip("=")
+        return f"https://meshtastic.org/e/{'?add=true' if add else ''}#{encoded}"
