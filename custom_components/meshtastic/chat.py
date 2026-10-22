@@ -515,6 +515,19 @@ class MeshtasticChat:
         channels = await self.entry.runtime_data.client.async_get_channels()
         return next((c for c in channels if int(c.get("index", 0)) == index), None)
 
+    async def _gateway_position_accuracy(self) -> int | None:
+        """
+        Say how precisely the gateway shares its own position with the mesh.
+
+        The node database holds the gateway's exact position without a precision. What the other nodes see is
+        limited by the position precision of the channel it broadcasts on, normally the primary one.
+        """
+        for channel in await self.entry.runtime_data.client.async_get_channels():
+            if channel.get("role") == CHAT_CHANNEL_ROLE_PRIMARY:
+                bits = channel.get("settings", {}).get("moduleSettings", {}).get("positionPrecision")
+                return precision_to_meters(bits)
+        return None
+
     async def async_node_details(self, node_id: int) -> dict[str, Any]:
         """Describe a node with everything the gateway knows about it, for the details view of the panel."""
         nodes = await self.entry.runtime_data.client.async_get_all_nodes()
@@ -528,16 +541,23 @@ class MeshtasticChat:
         gateway_position = gateway_node.get("position", {})
         gateway_info = await self._gateway_info(len(nodes)) if node_id == self.gateway_id else None
         gateway_marker = None
+        gateway_accuracy = None
         if gateway_position.get("latitude") is not None and gateway_position.get("longitude") is not None:
             gateway_fields = _user_fields(self.gateway_id, gateway_node.get("user", {}))
+            gateway_accuracy = precision_to_meters(gateway_position.get("precisionBits"))
+            if gateway_accuracy is None:
+                gateway_accuracy = await self._gateway_position_accuracy()
             gateway_marker = {
                 "num": self.gateway_id,
                 "short_name": gateway_fields["short_name"],
                 "long_name": gateway_fields["long_name"],
                 "latitude": gateway_position["latitude"],
                 "longitude": gateway_position["longitude"],
-                "accuracy": precision_to_meters(gateway_position.get("precisionBits")),
+                "accuracy": gateway_accuracy,
             }
+        position = _position_summary(node.get("position", {}), gateway_position)
+        if position is not None and node_id == self.gateway_id and position["accuracy"] is None:
+            position["accuracy"] = gateway_accuracy
         return {
             "num": node_id,
             **_user_fields(node_id, user),
@@ -558,7 +578,7 @@ class MeshtasticChat:
             "channel_utilization": metrics.get("channelUtilization"),
             "air_util_tx": metrics.get("airUtilTx"),
             "uptime_seconds": metrics.get("uptimeSeconds"),
-            "position": _position_summary(node.get("position", {}), gateway_position),
+            "position": position,
             "device_id": self._device_id(node_id),
             "gateway_position": gateway_marker,
             "is_gateway": node_id == self.gateway_id,
@@ -598,10 +618,15 @@ class MeshtasticChat:
         nodes = await self.entry.runtime_data.client.async_get_all_nodes()
         gateway_position = (nodes.get(self.gateway_id) or {}).get("position", {})
         result = []
+        gateway_accuracy = None
         for node_id, node in nodes.items():
             position = _position_summary(node.get("position", {}), gateway_position)
             if position is None:
                 continue
+            if node_id == self.gateway_id and position["accuracy"] is None:
+                if gateway_accuracy is None:
+                    gateway_accuracy = await self._gateway_position_accuracy()
+                position["accuracy"] = gateway_accuracy
             result.append(
                 {
                     "num": node_id,

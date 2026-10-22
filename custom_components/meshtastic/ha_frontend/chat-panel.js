@@ -65,6 +65,9 @@ const EMOJI_GROUPS = [
   ["Weather", "☀️ ⛅ ☁️ 🌧️ ⛈️ ❄️ 🌨️ 💨 🌈 🌡️"],
   ["Radio and things", "📡 📻 📶 🔋 📱 💬 📢 ⚠️ 🚨 🆘 ✅ ❌ ❓ ❗ ⏰ ☕ 🍺 🍕 🍔 🔔"],
 ].map(([title, emoji]) => [title, emoji.split(" ")]);
+// the strip above the composer shows the emoji used last, filled up with these until enough were used
+const EMOJI_RECENT_COUNT = 8;
+const EMOJI_DEFAULTS = ["👍", "❤️", "😂", "🙏", "👋", "✅", "🥾", "🔥"];
 const REPLY_SNIPPET_CHARS = 120;
 const PRECISION_BITS = [0, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32];
 // nodes without a device tracker are shown to ha-map as states under this prefix (they never reach Home Assistant)
@@ -963,9 +966,33 @@ class MeshtasticChatPanel extends HTMLElement {
     window.setTimeout(() => row.classList.remove("flash"), 1500);
   }
 
+  _emojiMarkup(emoji) {
+    return `<button type="button" class="emoji" data-emoji="${emoji}" aria-label="${emoji}">${emoji}</button>`;
+  }
+
+  // the emoji used last (most recent first), padded with the defaults
+  _recentEmoji() {
+    const used = Array.isArray(this._persisted.recentEmoji) ? this._persisted.recentEmoji : [];
+    return [...new Set([...used, ...EMOJI_DEFAULTS])].slice(0, EMOJI_RECENT_COUNT);
+  }
+
+  _rememberEmoji(emoji) {
+    this._persisted.recentEmoji = [emoji, ...this._recentEmoji().filter((e) => e !== emoji)].slice(0, EMOJI_RECENT_COUNT);
+    saveState(this._persisted);
+  }
+
   _toggleEmojiPicker(open = this._emojiEl.hidden) {
+    if (open) this._emojiRecentEl.innerHTML = this._recentEmoji().map((e) => this._emojiMarkup(e)).join("");
+    else this._toggleAllEmoji(false);
     this._emojiEl.hidden = !open;
     this._emojiButton.setAttribute("aria-expanded", String(open));
+  }
+
+  _toggleAllEmoji(open = this._emojiAllEl.hidden) {
+    this._emojiAllEl.hidden = !open;
+    const expand = this._emojiEl.querySelector(".emoji-expand");
+    expand.setAttribute("aria-expanded", String(open));
+    expand.classList.toggle("open", open);
   }
 
   _insertEmoji(emoji) {
@@ -974,6 +1001,7 @@ class MeshtasticChatPanel extends HTMLElement {
     const start = textarea.selectionStart ?? textarea.value.length;
     const end = textarea.selectionEnd ?? start;
     textarea.setRangeText(emoji, start, end, "end");
+    this._rememberEmoji(emoji);
     textarea.focus();
     this._autoGrow();
     this._updateComposer();
@@ -1676,18 +1704,26 @@ class MeshtasticChatPanel extends HTMLElement {
           <header class="thread-header"></header>
           <div class="messages" role="log" aria-live="polite"></div>
           <div class="error" role="alert" hidden></div>
-          <div class="emoji-picker" role="group" aria-label="Emoji" hidden>${EMOJI_GROUPS.map(
-            ([title, emoji]) =>
-              `<div class="emoji-group" role="group" aria-label="${escapeHtml(title)}"><h3>${escapeHtml(title)}</h3>${emoji
-                .map((e) => `<button type="button" class="emoji" data-emoji="${e}" aria-label="${e}">${e}</button>`)
-                .join("")}</div>`
-          ).join("")}</div>
           <div class="reply-bar" hidden>
             <ha-icon icon="mdi:reply"></ha-icon>
             <div class="reply-bar-text"><span class="reply-bar-name"></span><span class="reply-bar-snippet"></span></div>
             <button type="button" class="icon-button" data-action="cancel-reply" aria-label="Cancel reply" title="Cancel reply">
               <ha-icon icon="mdi:close"></ha-icon>
             </button>
+          </div>
+          <div class="emoji-picker" role="group" aria-label="Emoji" hidden>
+            <div class="emoji-all" hidden>${EMOJI_GROUPS.map(
+              ([title, emoji]) =>
+                `<div class="emoji-group" role="group" aria-label="${escapeHtml(title)}"><h3>${escapeHtml(title)}</h3>${emoji
+                  .map((e) => this._emojiMarkup(e))
+                  .join("")}</div>`
+            ).join("")}</div>
+            <div class="emoji-bar">
+              <div class="emoji-recent"></div>
+              <button type="button" class="emoji-expand" data-action="emoji-expand" aria-expanded="false" aria-label="Show all emoji" title="All emoji">
+                <ha-icon icon="mdi:chevron-up"></ha-icon>
+              </button>
+            </div>
           </div>
           <form class="composer">
             <div class="composer-field">
@@ -1724,6 +1760,8 @@ class MeshtasticChatPanel extends HTMLElement {
     this._tooltipEl = root.querySelector(".tooltip");
     this._replyEl = root.querySelector(".reply-bar");
     this._emojiEl = root.querySelector(".emoji-picker");
+    this._emojiAllEl = root.querySelector(".emoji-all");
+    this._emojiRecentEl = root.querySelector(".emoji-recent");
     this._emojiButton = root.querySelector(".emoji-toggle");
     this._form = root.querySelector(".composer");
     this._textarea = root.querySelector("textarea");
@@ -1889,6 +1927,7 @@ class MeshtasticChatPanel extends HTMLElement {
     this._emojiEl.addEventListener("click", (ev) => {
       const emoji = ev.target.closest("[data-emoji]");
       if (emoji) this._insertEmoji(emoji.dataset.emoji);
+      if (ev.target.closest("[data-action=emoji-expand]")) this._toggleAllEmoji();
     });
 
     this._form.addEventListener("submit", (ev) => {

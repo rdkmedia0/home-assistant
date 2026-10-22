@@ -349,7 +349,7 @@ and to every user once a gateway allows non-administrators (see the options belo
 | Byte counter next to the composer | Meshtastic text messages are limited to 200 bytes, prefix included; an emoji takes 4 to 7 of them |
 | ↩ next to a message | reply to it (see below) |
 | Grey box with a name above a message | the message it answers; click it to jump to the original |
-| ☺ in the composer | opens the emoji picker |
+| ☺ in the composer | opens a strip with the emoji you used last; ⌃ at its end shows all emoji |
 | Bin icon in the header | administrators can delete the stored history of a conversation; messages on devices are not affected |
 | Name or ⓘ in the header | opens the details of the node or channel (see below) |
 
@@ -364,9 +364,14 @@ message in the same way; the quoted text is kept with the reply, so it is still 
 deleted from the history. Only messages that carry a packet id can be answered, which is every message received or
 sent since this feature exists.
 
-☺ in the composer opens a picker with a few dozen emoji (smileys, gestures, outdoors, weather, radio); a click puts the
-emoji at the cursor. Emoji are plain text on the mesh, so every Meshtastic app shows them, but each takes several of
-the 200 bytes of a message, and small device screens may not be able to draw them.
+☺ in the composer opens a compact strip with the eight emoji you used last (it starts with 👍 ❤️ 😂 🙏 👋 ✅ 🥾 🔥,
+and is kept in your browser); a click puts the emoji at the cursor. ⌃ at the end of the strip opens the full list
+(smileys, gestures, outdoors, weather, radio) above it.
+
+<p align="center"><img src="docs/mesh-chat/emoji.png" width="800" alt="The emoji strip with the full list opened above it"></p>
+
+Emoji are plain text on the mesh, so every Meshtastic app shows them, but each takes several of the 200 bytes of a
+message, and small device screens may not be able to draw them.
 
 ### Node details, favourites and the map
 
@@ -440,7 +445,10 @@ Assistant log with the user's name.
 <p align="center"><img src="docs/mesh-chat/map.png" width="800" alt="Map view: full-size map with the chat's own node markers"></p>
 
 A node that shares its position with limited precision gets a circle of that accuracy around its marker (exact
-positions, and ones coarser than 50 km, get none), on the full map and in the details map.
+positions, and ones coarser than 50 km, get none), on the full map and in the details map. The circle is not a radio
+range: it shows how precisely the node tells the mesh where it is, taken from the precision bits of its position
+packets. Your own gateway's position is exact in its node list, so its circle shows what the mesh sees instead: the
+position precision of its primary channel (none when that channel shares full precision or no position).
 
 Nodes with a `device_tracker` entity (the nodes selected in the integration options) are the ones Home Assistant's
 own Map panel and automations know as well; the chat map does not need them.

@@ -1186,3 +1186,24 @@ async def test_websocket_send_a_reply(hass: HomeAssistant, hass_ws_client, chat_
     response = await ws.receive_json()
     assert not response["success"]
     assert "not available" in response["error"]["message"]
+
+
+async def test_gateway_position_accuracy_follows_its_primary_channel(chat_setup) -> None:
+    _, chat, client = chat_setup
+    # no precision on the channel: nothing to draw (an exact position)
+    assert (await chat.async_node_details(GATEWAY))["position"]["accuracy"] is None
+    assert (await chat.async_node_details(ANNA))["gateway_position"]["accuracy"] is None
+
+    # what the mesh sees of the gateway is limited by the position precision of its primary channel
+    client.channels[0]["settings"]["moduleSettings"] = {"positionPrecision": 13}
+    assert (await chat.async_node_details(GATEWAY))["position"]["accuracy"] == 2918
+    assert (await chat.async_node_details(ANNA))["gateway_position"]["accuracy"] == 2918
+    nodes = {n["num"]: n for n in (await chat.async_map_nodes())["nodes"]}
+    assert nodes[GATEWAY]["position"]["accuracy"] == 2918
+    assert nodes[ANNA]["position"]["accuracy"] == 2918  # its own precision bits, not the gateway's
+
+    # full precision is exact, and a channel that shares no position leaves nothing to draw either
+    client.channels[0]["settings"]["moduleSettings"] = {"positionPrecision": 32}
+    assert (await chat.async_node_details(GATEWAY))["position"]["accuracy"] == 0
+    client.channels[0]["settings"]["moduleSettings"] = {"positionPrecision": 0}
+    assert (await chat.async_node_details(GATEWAY))["position"]["accuracy"] is None

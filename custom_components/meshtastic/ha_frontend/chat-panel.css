@@ -646,12 +646,34 @@ a.chip-button { text-decoration: none; color: inherit; }
 .emoji-toggle:hover:not(:disabled) { color: var(--primary-text-color); }
 .emoji-toggle:disabled { opacity: 0.4; cursor: default; }
 .emoji-picker {
-  max-height: 200px;
-  overflow-y: auto;
-  padding: 4px 12px 8px;
   border-top: 1px solid var(--divider-color);
   background: var(--card-background-color);
 }
+.emoji-picker[hidden] { display: none; }
+.emoji-all {
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 0 12px 6px;
+  border-bottom: 1px solid var(--divider-color);
+}
+.emoji-bar { display: flex; align-items: center; gap: 4px; padding: 2px 8px 2px 12px; }
+.emoji-recent { flex: 1; min-width: 0; display: flex; gap: 2px; overflow: hidden; }
+.emoji-expand {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--secondary-text-color);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+.emoji-expand:hover { background: var(--secondary-background-color); }
+.emoji-expand.open { transform: rotate(180deg); }
 .emoji-group h3 {
   margin: 8px 0 2px;
   font-size: 11px;
@@ -661,12 +683,13 @@ a.chip-button { text-decoration: none; color: inherit; }
   color: var(--secondary-text-color);
 }
 .emoji {
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
   border: none;
   border-radius: 8px;
   background: none;
-  font-size: 22px;
+  font-size: 21px;
   line-height: 1;
   cursor: pointer;
 }
