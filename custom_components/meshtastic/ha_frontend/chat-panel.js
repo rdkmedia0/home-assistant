@@ -5,7 +5,7 @@
 // Mesh Chat panel: read and send Meshtastic channel and direct messages through a gateway.
 // Plain web component without external dependencies, styled with Home Assistant theme variables.
 
-const PANEL_BUILD = "v2.10"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
+const PANEL_BUILD = "v2.11"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
 const STORAGE_KEY = "meshtastic-chat";
 const HISTORY_LIMIT = 200;
 const TARGET_REFRESH_MS = 120 * 1000;
@@ -470,6 +470,7 @@ class MeshtasticChatPanel extends HTMLElement {
     this._telemetryType = TELEMETRY_TYPES[0][0];
     this._mapCard = null;
     this._mapStates = null;
+    this._mapView = null; // { data, focus, filter, element } while the full map is shown
     this._tooltipTimer = null;
   }
 
@@ -478,6 +479,7 @@ class MeshtasticChatPanel extends HTMLElement {
     this._hass = hass;
     if (this._menuButton) this._menuButton.hass = hass;
     if (this._mapCard && "hass" in this._mapCard) this._mapCard.hass = this._mapHass(hass);
+    if (this._mapView && this._mapView.element && "hass" in this._mapView.element) this._mapView.element.hass = hass;
     if (first) this._init();
   }
 
@@ -582,6 +584,7 @@ class MeshtasticChatPanel extends HTMLElement {
       this._selectConversation(known ? remembered : this._defaultConversation(gateway), { showThread: false });
     }
     this._render();
+    if (this._mapView) this._refreshFullMap();
   }
 
   _subscribe() {
@@ -698,6 +701,7 @@ class MeshtasticChatPanel extends HTMLElement {
   }
 
   _isThreadVisible() {
+    if (this._mapView) return false;
     return !this._narrow || (this._showThread && !this._details);
   }
 
@@ -915,6 +919,207 @@ class MeshtasticChatPanel extends HTMLElement {
     if (name) name.focus();
   }
 
+  // ---------- full map ----------
+
+  _mapPoints(nodes) {
+    return nodes.map((n) => ({
+      num: n.num,
+      short_name: n.short_name,
+      long_name: n.long_name,
+      latitude: n.position.latitude,
+      longitude: n.position.longitude,
+    }));
+  }
+
+  async _openFullMap(focus = null) {
+    const gateway = this._gateway();
+    if (!gateway) return;
+    this._hideTooltip();
+    if (this._narrow) this._closeDetails({ render: false });
+    const view = { entryId: gateway.entry_id, data: null, error: null, focus, filter: "", element: null, markers: new Map() };
+    this._mapView = view;
+    this._applyLayout();
+    this._renderFullMap();
+    try {
+      view.data = await this._hass.callWS({ type: "meshtastic/chat/map", entry_id: gateway.entry_id });
+    } catch (err) {
+      view.error = err.message || String(err);
+    }
+    if (this._mapView === view) this._renderFullMap();
+  }
+
+  _closeFullMap({ render = true } = {}) {
+    if (!this._mapView) return;
+    this._mapView = null;
+    this._fullMapEl.hidden = true;
+    this._fullMapEl.innerHTML = "";
+    if (render) {
+      this._applyLayout();
+      this._renderThread();
+    }
+  }
+
+  async _refreshFullMap() {
+    const view = this._mapView;
+    const gateway = this._gateway();
+    if (!view || !gateway) return;
+    try {
+      const data = await this._hass.callWS({ type: "meshtastic/chat/map", entry_id: gateway.entry_id });
+      if (this._mapView !== view) return;
+      view.data = data;
+      if (view.element && "editableLocations" in view.element) view.element.editableLocations = this._fullMapLocations(view);
+      this._renderFullMapList();
+    } catch (e) {
+      // keep what is shown
+    }
+  }
+
+  _fullMapLocations(view) {
+    const points = this._mapPoints(view.data ? view.data.nodes : []);
+    return points.map((p) => {
+      let element = view.markers.get(p.num);
+      if (!element) {
+        element = this._mapMarkerElement(p);
+        view.markers.set(p.num, element);
+      }
+      element.style.outline = p.num === view.focus ? "3px solid var(--primary-color)" : "";
+      element.style.zIndex = p.num === view.focus ? "1000" : "";
+      return {
+        id: `node-${p.num}`,
+        location: [p.latitude, p.longitude],
+        title: p.long_name,
+        element,
+        elementSize: [36, 36],
+        activatable: true,
+        locationEditable: false,
+        radiusEditable: false,
+        fit: view.focus === null,
+      };
+    });
+  }
+
+  _renderFullMap() {
+    const el = this._fullMapEl;
+    const view = this._mapView;
+    if (!el) return;
+    if (!view) {
+      el.hidden = true;
+      el.innerHTML = "";
+      return;
+    }
+    el.hidden = false;
+    el.innerHTML = `
+      <div class="fullmap-canvas"></div>
+      <div class="map-overlay">
+        <div class="map-overlay-head">
+          <div class="search">
+            <ha-icon icon="mdi:magnify"></ha-icon>
+            <input type="search" placeholder="Find a node" aria-label="Find a node on the map" value="${escapeHtml(view.filter)}">
+          </div>
+          <button class="icon-button" data-action="fit-map" aria-label="Show all nodes" title="Show all nodes"><ha-icon icon="mdi:fit-to-screen-outline"></ha-icon></button>
+          <button class="icon-button" data-action="close-map" aria-label="Back to the chat" title="Back to the chat"><ha-icon icon="mdi:close"></ha-icon></button>
+        </div>
+        <div class="map-overlay-list node-list"></div>
+        <p class="hint map-status" hidden></p>
+      </div>`;
+    this._renderFullMapList();
+    if (!view.data) return;
+    const canvas = el.querySelector(".fullmap-canvas");
+    this._mountFullMap(canvas, view);
+  }
+
+  _renderFullMapList() {
+    const view = this._mapView;
+    const list = this._fullMapEl && this._fullMapEl.querySelector(".map-overlay-list");
+    if (!view || !list) return;
+    if (view.error) {
+      list.innerHTML = `<p class="empty">${escapeHtml(view.error)}</p>`;
+      return;
+    }
+    if (!view.data) {
+      list.innerHTML = `<p class="empty">Loading…</p>`;
+      return;
+    }
+    const filter = view.filter;
+    const nodes = view.data.nodes.filter(
+      (n) => !filter || [n.long_name, n.short_name, n.user_id].some((v) => String(v || "").toLowerCase().includes(filter))
+    );
+    const rows = nodes
+      .map((n) => {
+        const p = n.position;
+        const parts = [];
+        if (n.is_gateway) parts.push("your gateway");
+        else if (isSet(p.distance)) parts.push(`${formatDistance(p.distance)} · ${p.bearing}° ${compassPoint(p.bearing)}`);
+        if (p.time) parts.push(`${this._formatAgo(p.time)} ago`);
+        return `
+          <button class="node-row ${n.num === view.focus ? "selected" : ""}" data-action="focus-node" data-node="${n.num}" title="Show on the map">
+            ${this._avatar(n.num, n.short_name)}
+            <span class="item-text">
+              <span class="item-title"><span class="name">${escapeHtml(n.long_name)}</span></span>
+              <span class="preview">${escapeHtml(parts.join(" · "))}</span>
+            </span>
+          </button>`;
+      })
+      .join("");
+    const count = view.data.nodes.length;
+    list.innerHTML = `
+      <div class="map-overlay-summary">${count} node${count === 1 ? "" : "s"} with a position · ${view.data.nodes_known} known${
+        filter ? ` · ${nodes.length} shown` : ""
+      }</div>
+      ${rows || `<p class="empty">No matching node</p>`}`;
+  }
+
+  async _mountFullMap(canvas, view) {
+    const how = await this._loadMapElement(canvas);
+    if (this._mapView !== view || !canvas.isConnected) return;
+    if (!how) {
+      canvas.innerHTML = `<p class="empty center">The map element could not be loaded in this frontend.</p>`;
+      return;
+    }
+    const map = document.createElement("ha-map");
+    if (!("editableLocations" in map)) {
+      canvas.innerHTML = `<p class="empty center">This Home Assistant version is too old for the map view.</p>`;
+      this._mapNote("the map element has no editableLocations in this frontend");
+      return;
+    }
+    map.entities = [];
+    map.editableLocations = this._fullMapLocations(view);
+    map.autoFit = view.focus === null;
+    map.themeMode = "auto";
+    map.style.cssText = "position:absolute;inset:0;height:100%;width:100%";
+    if ("hass" in map) map.hass = this._hass;
+    canvas.replaceChildren(map);
+    view.element = map;
+    this._mapNote(`Home Assistant's map element (${how}), ${view.data.nodes.length} node markers`, this._fullMapEl);
+    if (view.focus !== null) this._focusMapNode(view.focus, { scroll: false });
+  }
+
+  _focusMapNode(num, { scroll = true } = {}) {
+    const view = this._mapView;
+    if (!view || !view.data) return;
+    const node = view.data.nodes.find((n) => n.num === num);
+    if (!node) return;
+    view.focus = num;
+    if (view.element && "editableLocations" in view.element) {
+      view.element.editableLocations = this._fullMapLocations(view);
+      if (typeof view.element.setView === "function") view.element.setView([node.position.latitude, node.position.longitude], 15);
+    }
+    this._renderFullMapList();
+    if (scroll) {
+      const row = this._fullMapEl.querySelector(`.node-row[data-node="${num}"]`);
+      if (row && typeof row.scrollIntoView === "function") row.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  _fitFullMap() {
+    const view = this._mapView;
+    if (!view || !view.element) return;
+    view.focus = null;
+    view.element.editableLocations = this._fullMapLocations(view);
+    if (typeof view.element.fitMap === "function") view.element.fitMap();
+    this._renderFullMapList();
+  }
+
   // ---------- channel management ----------
 
   _channelFormValues(form) {
@@ -1072,9 +1277,7 @@ class MeshtasticChatPanel extends HTMLElement {
     this._renderDetails();
     this._renderList();
     try {
-      if (kind === "map") {
-        details.data = await this._hass.callWS({ type: "meshtastic/chat/map", entry_id: gateway.entry_id });
-      } else if (kind === "channel") {
+      if (kind === "channel") {
         details.data = await this._hass.callWS({ type: "meshtastic/chat/channel", entry_id: gateway.entry_id, index: id });
       } else {
         details.data = await this._hass.callWS({ type: "meshtastic/chat/node", entry_id: gateway.entry_id, node_id: id });
@@ -1267,10 +1470,10 @@ class MeshtasticChatPanel extends HTMLElement {
   }
 
   // what the map did, shown under it and logged, so problems can be reported precisely
-  _mapNote(text) {
+  _mapNote(text, root = this._detailsEl) {
     this._mapStatusText = text;
     if (window.console && typeof window.console.info === "function") window.console.info(`[Mesh Chat] map: ${text}`);
-    const status = this._detailsEl && this._detailsEl.querySelector(".map-status");
+    const status = root && root.querySelector(".map-status");
     if (status) {
       status.textContent = `Map (panel ${PANEL_BUILD}): ${text}`;
       status.hidden = false;
@@ -1409,6 +1612,7 @@ class MeshtasticChatPanel extends HTMLElement {
             </button>
           </form>
         </main>
+        <section class="fullmap" aria-label="Map of the mesh" hidden></section>
         <aside class="details" aria-label="Details" hidden></aside>
       </div>
       <div class="tooltip" role="tooltip" hidden></div>
@@ -1425,6 +1629,7 @@ class MeshtasticChatPanel extends HTMLElement {
     this._messagesEl = root.querySelector(".messages");
     this._errorEl = root.querySelector(".error");
     this._detailsEl = root.querySelector(".details");
+    this._fullMapEl = root.querySelector(".fullmap");
     this._detailsErrorEl = null;
     this._tooltipEl = root.querySelector(".tooltip");
     this._form = root.querySelector(".composer");
@@ -1439,14 +1644,37 @@ class MeshtasticChatPanel extends HTMLElement {
     });
 
     root.querySelector(".toolbar-button").addEventListener("click", () => {
-      if (this._details && this._details.kind === "map") this._closeDetails();
-      else this._openDetails("map", 0);
+      if (this._mapView) this._closeFullMap();
+      else this._openFullMap();
+    });
+
+    this._fullMapEl.addEventListener("click", (ev) => {
+      const action = ev.target.closest("[data-action]");
+      if (!action) return;
+      const { dataset } = action;
+      if (dataset.action === "close-map") this._closeFullMap();
+      else if (dataset.action === "fit-map") this._fitFullMap();
+      else if (dataset.action === "focus-node") this._focusMapNode(Number(dataset.node));
+      else if (dataset.action === "navigate") this._navigate(dataset.href);
+    });
+    this._fullMapEl.addEventListener("input", (ev) => {
+      if (ev.target.matches("input[type=search]") && this._mapView) {
+        this._mapView.filter = ev.target.value.trim().toLowerCase();
+        this._renderFullMapList();
+      }
+    });
+    this._fullMapEl.addEventListener("editable-location-clicked", (ev) => {
+      const id = ev.detail && ev.detail.id;
+      if (typeof id !== "string" || !id.startsWith("node-")) return;
+      ev.stopPropagation();
+      this._openDetails("node", Number(id.slice(5)));
     });
 
     this._gatewaySelect.addEventListener("change", () => {
       this._entryId = this._gatewaySelect.value;
       this._conversation = null;
       this._closeDetails({ render: false });
+      this._closeFullMap({ render: false });
       const gateway = this._gateway();
       const remembered = (this._persisted.conversation || {})[this._entryId];
       this._selectConversation(
@@ -1520,6 +1748,7 @@ class MeshtasticChatPanel extends HTMLElement {
       else if (dataset.action === "more-info") this._moreInfo(dataset.entity);
       else if (dataset.action === "open-conversation") this._selectConversation(dataset.conversation);
       else if (dataset.action === "open-node") this._openDetails("node", Number(dataset.node));
+      else if (dataset.action === "open-map") this._openFullMap(Number(dataset.node));
       else if (dataset.action === "copy") this._copyText(dataset.text);
       else if (dataset.action === "disable-channel") this._disableChannel();
     });
@@ -1587,6 +1816,7 @@ class MeshtasticChatPanel extends HTMLElement {
     this._layoutEl.classList.toggle("narrow", !!this._narrow);
     this._layoutEl.classList.toggle("show-thread", !!this._showThread);
     this._layoutEl.classList.toggle("show-details", !!this._details);
+    this._layoutEl.classList.toggle("show-map", !!this._mapView);
   }
 
   _render() {
@@ -1885,17 +2115,7 @@ class MeshtasticChatPanel extends HTMLElement {
     const subject = data || info;
 
     let header;
-    if (details.kind === "map") {
-      const count = data ? data.nodes.length : 0;
-      header = `
-        <span class="avatar channel" aria-hidden="true"><ha-icon icon="mdi:map-marker-multiple-outline"></ha-icon></span>
-        <div class="details-title">
-          <div class="name">Map of the mesh</div>
-          <div class="subtitle">${escapeHtml(
-            data ? `${count} node${count === 1 ? "" : "s"} with a position · ${data.nodes_known} known to ${gateway.gateway.long_name || gateway.title}` : "Loading…"
-          )}</div>
-        </div>`;
-    } else if (details.kind === "new-channel") {
+    if (details.kind === "new-channel") {
       header = `
         <span class="avatar channel" aria-hidden="true"><ha-icon icon="mdi:plus"></ha-icon></span>
         <div class="details-title">
@@ -1928,8 +2148,6 @@ class MeshtasticChatPanel extends HTMLElement {
       body = this._channelForm(null, details);
     } else if (!data) {
       body = `<p class="empty">Loading…</p>`;
-    } else if (details.kind === "map") {
-      body = this._mapBody(data);
     } else if (details.kind === "channel") {
       body = this._channelDetailsBody(data, details);
     } else {
@@ -1957,54 +2175,6 @@ class MeshtasticChatPanel extends HTMLElement {
     } else {
       this._unmountMap();
     }
-  }
-
-  _mapBody(data) {
-    // own markers for every node: short name on a coloured circle, click opens the node details
-    const entities = [];
-    const points = data.nodes.map((n) => ({
-      num: n.num,
-      short_name: n.short_name,
-      long_name: n.long_name,
-      latitude: n.position.latitude,
-      longitude: n.position.longitude,
-    }));
-    const canEmbed = (!!customElements.get("hui-card") || typeof window.loadCardHelpers === "function" || !!customElements.get("ha-map")) && data.nodes.length > 0;
-    const missing = data.nodes.filter((n) => !n.device_tracker).length;
-    const rows = data.nodes
-      .map((n) => {
-        const p = n.position;
-        const parts = [];
-        if (n.is_gateway) parts.push("your gateway");
-        else if (isSet(p.distance)) parts.push(`${formatDistance(p.distance)} · ${p.bearing}° ${compassPoint(p.bearing)}`);
-        if (p.time) parts.push(`position ${this._formatAgo(p.time)} ago`);
-        else if (n.last_heard) parts.push(`heard ${this._formatAgo(n.last_heard)} ago`);
-        return `
-          <button class="node-row" data-action="open-node" data-node="${n.num}" title="Node details">
-            ${this._avatar(n.num, n.short_name)}
-            <span class="item-text">
-              <span class="item-title">
-                <span class="name">${escapeHtml(n.long_name)}</span>
-                ${n.device_tracker ? `<span class="badge">tracker</span>` : ""}
-              </span>
-              <span class="preview">${escapeHtml(parts.join(" · "))}</span>
-            </span>
-          </button>`;
-      })
-      .join("");
-    return `
-      ${data.nodes.length ? `<div class="map tall" data-entities="${escapeHtml(JSON.stringify(entities))}" data-points="${escapeHtml(JSON.stringify(points))}"></div><p class="hint map-status" hidden></p>` : ""}
-      ${canEmbed ? "" : `<p class="hint">The map could not be embedded in this view.</p>`}
-      <div class="actions"><button class="chip-button" data-action="navigate" data-href="/map"><ha-icon icon="mdi:map"></ha-icon>Open the Map panel</button></div>
-      ${
-        missing
-          ? `<p class="hint">Every node with a position is drawn from the gateway's node database; click a marker for its details. ${missing} of them ${
-              missing === 1 ? "has" : "have"
-            } no device tracker, so Home Assistant's own Map panel shows only the ${entities.length} marked "tracker". Turn on "Track every node with a position" in the Mesh Chat options to give them trackers too.</p>`
-          : ""
-      }
-      <h3>Nodes with a position</h3>
-      <div class="node-list">${rows || `<p class="empty">No node has reported a position yet.</p>`}</div>`;
   }
 
   _section(title, rows) {
@@ -2095,7 +2265,7 @@ class MeshtasticChatPanel extends HTMLElement {
           `<button class="chip-button" data-action="more-info" data-entity="${escapeHtml(node.device_tracker)}"><ha-icon icon="mdi:map-marker"></ha-icon>Show on map</button>`
         );
       }
-      buttons.push(`<button class="chip-button" data-action="navigate" data-href="/map"><ha-icon icon="mdi:map"></ha-icon>Open the map</button>`);
+      buttons.push(`<button class="chip-button" data-action="open-map" data-node="${node.num}"><ha-icon icon="mdi:map"></ha-icon>Open the map</button>`);
       position = `
         ${this._section("Position", rows)}
         <div class="map" data-entities="${escapeHtml(JSON.stringify(unique))}" data-points="${escapeHtml(JSON.stringify(points))}"></div>
@@ -2851,6 +3021,38 @@ class MeshtasticChatPanel extends HTMLElement {
       .qr { width: 180px; max-width: 100%; margin: 8px auto; padding: 8px; background: #fff; border-radius: 8px; }
       .qr svg { display: block; width: 100%; height: auto; }
 
+      .fullmap { flex: 1; min-width: 0; position: relative; display: none; background: var(--secondary-background-color); }
+      .layout.show-map .fullmap { display: block; }
+      .layout.show-map .thread { display: none; }
+      .fullmap-canvas { position: absolute; inset: 0; z-index: 0; }
+      .fullmap-canvas ha-map { display: block; }
+      .map-overlay {
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        z-index: 1;
+        width: 300px;
+        max-width: calc(100% - 24px);
+        max-height: calc(100% - 24px);
+        display: flex;
+        flex-direction: column;
+        border-radius: 12px;
+        background: var(--card-background-color);
+        box-shadow: var(--ha-card-box-shadow, 0 2px 8px rgba(0, 0, 0, 0.3));
+        overflow: hidden;
+      }
+      .map-overlay-head { display: flex; align-items: center; gap: 4px; padding: 4px 4px 4px 0; }
+      .map-overlay-head .search { flex: 1; min-width: 0; margin: 8px 0 8px 8px; height: 36px; }
+      .map-overlay-list { overflow-y: auto; min-height: 0; border-top: 1px solid var(--divider-color); }
+      .map-overlay-list .node-row.selected { background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.12); }
+      .map-overlay-summary { padding: 8px 16px 4px; font-size: 12px; color: var(--secondary-text-color); }
+      .map-overlay .map-status { margin: 0; padding: 6px 12px; border-top: 1px solid var(--divider-color); }
+      .layout.narrow .fullmap { display: none; }
+      .layout.narrow.show-map .sidebar { display: none; }
+      .layout.narrow.show-map .fullmap { display: block; }
+      .layout.narrow.show-map.show-details .fullmap { display: none; }
+      .layout.narrow .map-overlay { max-height: 45%; }
+
       /* medium widths: the details pane floats over the conversation instead of squeezing it */
       @container (max-width: 1000px) {
         .layout:not(.narrow) .details {
@@ -2871,6 +3073,8 @@ class MeshtasticChatPanel extends HTMLElement {
       .layout.narrow.show-details .details { display: flex; width: 100%; border-left: none; }
       .layout.narrow .back { display: inline-flex; }
       .layout.narrow .bubble { max-width: 85%; }
+      /* the map replaces the conversation on phones too; the ordinary narrow rules above would show the thread */
+      .layout.narrow.show-map .thread, .layout.narrow.show-map.show-thread .thread { display: none; }
     `;
   }
 }
