@@ -5,6 +5,7 @@
 // Mesh Chat panel: read and send Meshtastic channel and direct messages through a gateway.
 // Plain web component without external dependencies, styled with Home Assistant theme variables.
 
+const PANEL_BUILD = "v2.8"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
 const STORAGE_KEY = "meshtastic-chat";
 const HISTORY_LIMIT = 200;
 const TARGET_REFRESH_MS = 120 * 1000;
@@ -363,7 +364,9 @@ const prettyEnum = (value) => {
 
 // "HELTEC_V3" -> "Heltec V3", "T_ECHO" -> "T Echo", "RAK4631" stays
 const prettyModel = (value) =>
-  String(value ?? "")
+  /^\d+$/.test(String(value ?? ""))
+    ? `Unknown model (${value})`
+    : String(value ?? "")
     .split("_")
     .filter(Boolean)
     .map((word) => (/^[A-Z]+$/.test(word) ? word[0] + word.slice(1).toLowerCase() : word))
@@ -1269,7 +1272,7 @@ class MeshtasticChatPanel extends HTMLElement {
     if (window.console && typeof window.console.info === "function") window.console.info(`[Mesh Chat] map: ${text}`);
     const status = this._detailsEl && this._detailsEl.querySelector(".map-status");
     if (status) {
-      status.textContent = `Map: ${text}`;
+      status.textContent = `Map (panel ${PANEL_BUILD}): ${text}`;
       status.hidden = false;
     }
   }
@@ -2036,6 +2039,7 @@ class MeshtasticChatPanel extends HTMLElement {
           ["MQTT", g.mqtt_enabled ? "enabled" : "disabled"],
           ["Channels", String(g.channels)],
           ["Nodes known", String(g.nodes_known)],
+          ["Mesh Chat panel", `build ${PANEL_BUILD}`],
         ])
       : "";
 
@@ -2868,4 +2872,5 @@ class MeshtasticChatPanel extends HTMLElement {
   }
 }
 
+if (window.console && typeof window.console.info === "function") window.console.info(`[Mesh Chat] panel build ${PANEL_BUILD}`);
 customElements.define("meshtastic-chat-panel", MeshtasticChatPanel);
