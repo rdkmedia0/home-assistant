@@ -2252,7 +2252,7 @@ class MeshtasticChatPanel extends HTMLElement {
         ${
           node.device_tracker
             ? ""
-            : `<p class="hint">This node has no device tracker (it is not selected in the integration options), so Home Assistant's own Map panel and automations do not know its position.</p>`
+            : `<p class="hint">The gateway knows this position, but Home Assistant has no device tracker for the node yet, so the Map panel and automations cannot use it. Select the node in the integration options (Devices &gt; Meshtastic &gt; Configure) to get one.</p>`
         }`;
     } else {
       position = `${this._section("Position", [["Position", "not received yet"]])}`;
