@@ -419,9 +419,8 @@ Assistant log with the user's name.
 
 <p align="center"><img src="docs/mesh-chat/map.png" width="800" alt="Map view: full-size map with the chat's own node markers and an overlay listing the nodes with a position"></p>
 
-Nodes with a `device_tracker` entity (marked *tracker* in the list) are the ones Home Assistant's own Map panel and
-automations know as well. Turn on **Track every node with a position** in the Mesh Chat options to give every node
-that reported a position a device and a tracker, so the Map panel and the map card see the whole mesh too.
+Nodes with a `device_tracker` entity (the nodes selected in the integration options, marked *tracker* in the list)
+are the ones Home Assistant's own Map panel and automations know as well; the chat map does not need them.
 
 ### Options
 
@@ -431,7 +430,6 @@ that reported a position a device and a tracker, so the Map panel and the map ca
 | Prefix messages with the sender's name | off | All messages sent from Home Assistant come from the gateway node. When on, the Home Assistant user's name is added, e.g. `Alex B.: on my way` |
 | Messages kept per conversation | 200 | Older messages are removed once a conversation reaches this size |
 | Channel management from the chat | off | *Administrators only* or *All chat users* lets those users create, rename, re-key, enable or disable channels on the gateway from the channel details; off keeps channels read-only |
-| Track every node with a position | off | Creates a device and a `device_tracker` for every node that reported a position, not only the selected nodes, so Home Assistant's Map panel and automations see the whole mesh |
 
 History is kept in `.storage/meshtastic.chat.<entry id>` and removed when the gateway is deleted.
 

@@ -10,10 +10,8 @@ from typing import TYPE_CHECKING
 
 from homeassistant.components.device_tracker import DOMAIN as DEVICE_TRACKER_DOMAIN
 from homeassistant.components.device_tracker import TrackerEntity, TrackerEntityDescription
-from homeassistant.helpers.device_registry import DeviceInfo
 
 from . import MeshtasticData, helpers
-from .const import DOMAIN
 from .entity import MeshtasticNodeEntity
 
 if TYPE_CHECKING:
@@ -47,7 +45,7 @@ async def async_setup_entry(
     entry: MeshtasticConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    await helpers.setup_platform_entry(hass, entry, async_add_entities, _build_device_trackers, include_positioned=True)
+    await helpers.setup_platform_entry(hass, entry, async_add_entities, _build_device_trackers)
 
 
 async def async_unload_entry(
@@ -99,16 +97,6 @@ class MeshtasticDeviceTracker(MeshtasticNodeEntity, TrackerEntity):
         super().__init__(coordinator, gateway, node_id, DEVICE_TRACKER_DOMAIN, entity_description)
         self._attr_name = None
         self._attr_has_entity_name = True
-        # nodes tracked only because they have a position get their device from this entity, so name it
-        user = self.coordinator.data[self.node_id].get("user", {})
-        gateway_id = gateway.get("num")
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, str(self.node_id))},
-            name=user.get("longName"),
-            model_id=user.get("hwModel"),
-            serial_number=user.get("id"),
-            via_device=(DOMAIN, str(gateway_id)) if gateway_id is not None and gateway_id != self.node_id else None,
-        )
         # the position is known already; without this the tracker has none until the next coordinator update
         self._async_update_attrs()
 

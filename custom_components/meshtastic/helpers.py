@@ -10,13 +10,7 @@ from collections import defaultdict
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import (
-    CONF_OPTION_CHAT,
-    CONF_OPTION_CHAT_TRACK_ALL_NODES,
-    CONF_OPTION_CHAT_TRACK_ALL_NODES_DEFAULT,
-    CONF_OPTION_FILTER_NODES,
-    LOGGER,
-)
+from .const import CONF_OPTION_FILTER_NODES, LOGGER
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -29,40 +23,16 @@ if typing.TYPE_CHECKING:
     from .data import MeshtasticConfigEntry, MeshtasticData
 
 
-def track_all_positioned_nodes(entry: MeshtasticConfigEntry) -> bool:
-    """Whether every node that reported a position gets a device tracker, not only the selected nodes."""
-    return bool(
-        entry.options.get(CONF_OPTION_CHAT, {}).get(
-            CONF_OPTION_CHAT_TRACK_ALL_NODES, CONF_OPTION_CHAT_TRACK_ALL_NODES_DEFAULT
-        )
-    )
-
-
-def has_position(node_info: typing.Mapping[str, Any]) -> bool:
-    position = node_info.get("position") or {}
-    return position.get("latitude") is not None and position.get("longitude") is not None
-
-
-def is_tracked_node(
-    entry: MeshtasticConfigEntry, node_num: int, node_info: typing.Mapping[str, Any], *, include_positioned: bool
-) -> bool:
-    """Tell whether a node gets a device: selected nodes, plus every positioned node when asked and the option is on."""
-    filter_node_nums = [el["id"] for el in entry.options.get(CONF_OPTION_FILTER_NODES, [])]
-    if node_num in filter_node_nums:
-        return True
-    return include_positioned and track_all_positioned_nodes(entry) and has_position(node_info)
-
-
-def get_nodes(
-    entry: MeshtasticConfigEntry, *, include_positioned: bool = False
-) -> typing.Mapping[int, typing.Mapping[str, Any]]:
+def get_nodes(entry: MeshtasticConfigEntry) -> typing.Mapping[int, typing.Mapping[str, Any]]:
+    filter_nodes = entry.options.get(CONF_OPTION_FILTER_NODES, [])
+    filter_node_nums = [el["id"] for el in filter_nodes]
     if not entry.runtime_data.coordinator.data:
         return {}
 
     return {
         node_num: node_info
         for node_num, node_info in entry.runtime_data.coordinator.data.items()
-        if is_tracked_node(entry, node_num, node_info, include_positioned=include_positioned)
+        if node_num in filter_node_nums
     }
 
 
@@ -74,14 +44,12 @@ async def setup_platform_entry(
     entry: MeshtasticConfigEntry,
     async_add_entities: AddEntitiesCallback,
     entity_factory: Callable[[typing.Mapping[int, typing.Mapping[str, Any]], MeshtasticData], Iterable[Entity]],
-    *,
-    include_positioned: bool = False,
 ) -> None:
-    async_add_entities(entity_factory(get_nodes(entry, include_positioned=include_positioned), entry.runtime_data))
+    async_add_entities(entity_factory(get_nodes(entry), entry.runtime_data))
     platform = entity_platform.async_get_current_platform()
 
     def on_coordinator_data_update() -> None:
-        entities = entity_factory(get_nodes(entry, include_positioned=include_positioned), entry.runtime_data)
+        entities = entity_factory(get_nodes(entry), entry.runtime_data)
         new_entities = [s for s in entities if s.entity_id not in platform.entities]
         if new_entities:
             async_add_entities(new_entities)
