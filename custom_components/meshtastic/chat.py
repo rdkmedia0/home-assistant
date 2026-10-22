@@ -474,6 +474,7 @@ class MeshtasticChat:
         user_id = user.get("id") or f"!{node_id:08x}"
         metrics = node.get("deviceMetrics", {})
         gateway_position = (nodes.get(self.gateway_id) or {}).get("position", {})
+        gateway_info = await self._gateway_info(len(nodes)) if node_id == self.gateway_id else None
         return {
             "num": node_id,
             "user_id": user_id,
@@ -501,8 +502,60 @@ class MeshtasticChat:
             "device_tracker": self._device_tracker_entity_id(node_id),
             "gateway_device_tracker": self._device_tracker_entity_id(self.gateway_id) if self.gateway_id else None,
             "is_gateway": node_id == self.gateway_id,
+            "gateway_info": gateway_info,
             "conversation": node_conversation(node_id),
         }
+
+    async def _gateway_info(self, nodes_known: int) -> dict[str, Any]:
+        """Facts about the connected node itself: firmware, radio settings, what it knows."""
+        client = self.entry.runtime_data.client
+        metadata = getattr(client, "metadata", None) or {}
+        local_config = await client.async_get_node_local_config()
+        module_config = await client.async_get_node_module_config()
+        lora = local_config.get("lora", {})
+        mqtt = module_config.get("mqtt", {})
+        channels = [c for c in await client.async_get_channels() if c.get("role") != CHANNEL_ROLE_DISABLED]
+        return {
+            "firmware_version": metadata.get("firmwareVersion"),
+            "hw_model": metadata.get("hwModel"),
+            "role": metadata.get("role") or local_config.get("device", {}).get("role"),
+            "region": lora.get("region"),
+            "modem_preset": lora.get("modemPreset"),
+            "hop_limit": lora.get("hopLimit"),
+            "tx_power": lora.get("txPower"),
+            "tx_enabled": lora.get("txEnabled", True),
+            "mqtt_enabled": bool(mqtt.get("enabled", False)),
+            "channels": len(channels),
+            "nodes_known": nodes_known,
+            "title": self.entry.title,
+        }
+
+    async def async_map_nodes(self) -> dict[str, Any]:
+        """Every node with a position, for the map view: trackers to show and nodes that have none."""
+        nodes = await self.entry.runtime_data.client.async_get_all_nodes()
+        gateway_position = (nodes.get(self.gateway_id) or {}).get("position", {})
+        result = []
+        for node_id, node in nodes.items():
+            position = _position_summary(node.get("position", {}), gateway_position)
+            if position is None:
+                continue
+            user = node.get("user", {})
+            user_id = user.get("id") or f"!{node_id:08x}"
+            result.append(
+                {
+                    "num": node_id,
+                    "user_id": user_id,
+                    "long_name": user.get("longName") or user_id,
+                    "short_name": user.get("shortName") or user_id[-4:],
+                    "last_heard": node.get("lastHeard"),
+                    "position": position,
+                    "device_tracker": self._device_tracker_entity_id(node_id),
+                    "is_gateway": node_id == self.gateway_id,
+                    "conversation": node_conversation(node_id),
+                }
+            )
+        result.sort(key=lambda n: (not n["is_gateway"], n["position"]["distance"] or 0))
+        return {"nodes": result, "nodes_known": len(nodes)}
 
     async def async_node_request(
         self, node_id: int, request: str, telemetry_type: str | None = None
@@ -890,6 +943,7 @@ def _async_register_websocket_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_chat_favorite)
     websocket_api.async_register_command(hass, websocket_chat_channel)
     websocket_api.async_register_command(hass, websocket_chat_channel_set)
+    websocket_api.async_register_command(hass, websocket_chat_map)
 
 
 @websocket_api.websocket_command({vol.Required("type"): "meshtastic/chat/gateways"})
@@ -1142,6 +1196,22 @@ async def websocket_chat_channel_set(
         connection.send_error(msg["id"], websocket_api.ERR_INVALID_FORMAT, str(e))
         return
     except (MeshtasticApiClientError, ValueError, TimeoutError) as e:
+        connection.send_error(msg["id"], websocket_api.ERR_UNKNOWN_ERROR, str(e) or type(e).__name__)
+        return
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command({vol.Required("type"): "meshtastic/chat/map", vol.Required("entry_id"): str})
+@websocket_api.async_response
+async def websocket_chat_map(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    if (chat := _get_chat(hass, connection, msg)) is None:
+        return
+    try:
+        result = await chat.async_map_nodes()
+    except Exception as e:  # noqa: BLE001
+        _LOGGER.debug("Failed to load map nodes", exc_info=True)
         connection.send_error(msg["id"], websocket_api.ERR_UNKNOWN_ERROR, str(e) or type(e).__name__)
         return
     connection.send_result(msg["id"], result)

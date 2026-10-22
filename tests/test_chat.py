@@ -67,6 +67,7 @@ class FakeClient:
             2: self._channel(2, "DISABLED", "", ""),
         }
         self.written_channels: list[dict[str, Any]] = []
+        self.metadata = {"firmwareVersion": "2.7.26.abcdef", "hwModel": "HELTEC_V3", "role": "CLIENT"}
 
     @staticmethod
     def _channel(index: int, role: str, name: str, psk: str, **module_settings: Any) -> dict[str, Any]:
@@ -942,3 +943,49 @@ async def test_api_client_channel_url_and_write() -> None:
     # the read-back failed, so the written channel is reported
     assert stored["settings"]["name"] == "New"
     assert stored["settings"]["psk"] == base64.b64encode(b"k" * 32).decode()
+
+
+async def test_gateway_details_and_map(hass: HomeAssistant, chat_setup) -> None:
+    entry, chat, _ = chat_setup
+    tracker = er.async_get(hass).async_get_or_create(
+        "device_tracker",
+        DOMAIN,
+        f"{entry.entry_id}_device_tracker_{GATEWAY}_node_position",
+        suggested_object_id="meshtastic_gateway_position",
+        config_entry=entry,
+    )
+
+    details = await chat.async_node_details(GATEWAY)
+    assert details["is_gateway"] is True
+    assert details["gateway_info"] == {
+        "firmware_version": "2.7.26.abcdef",
+        "hw_model": "HELTEC_V3",
+        "role": "CLIENT",
+        "region": "EU_868",
+        "modem_preset": "LONG_FAST",
+        "hop_limit": 3,
+        "tx_power": None,
+        "tx_enabled": True,
+        "mqtt_enabled": True,
+        "channels": 2,
+        "nodes_known": 2,
+        "title": "Home Gateway",
+    }
+    assert (await chat.async_node_details(ANNA))["gateway_info"] is None
+
+    nodes = await chat.async_map_nodes()
+    assert nodes["nodes_known"] == 2
+    assert [(n["num"], n["is_gateway"], n["device_tracker"]) for n in nodes["nodes"]] == [
+        (GATEWAY, True, tracker.entity_id),
+        (ANNA, False, None),
+    ]
+    assert nodes["nodes"][1]["position"]["distance"] == pytest.approx(1112, abs=2)
+
+
+async def test_websocket_map(hass: HomeAssistant, hass_ws_client, chat_setup) -> None:
+    entry, _, _ = chat_setup
+    ws = await hass_ws_client(hass)
+    await ws.send_json({"id": 1, "type": "meshtastic/chat/map", "entry_id": entry.entry_id})
+    response = await ws.receive_json()
+    assert response["success"]
+    assert [n["short_name"] for n in response["result"]["nodes"]] == ["4904", "ANNA"]

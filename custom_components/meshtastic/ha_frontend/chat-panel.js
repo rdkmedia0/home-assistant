@@ -1064,11 +1064,15 @@ class MeshtasticChatPanel extends HTMLElement {
     this._details = details;
     this._applyLayout();
     this._renderDetails();
+    this._renderList();
     try {
-      details.data =
-        kind === "channel"
-          ? await this._hass.callWS({ type: "meshtastic/chat/channel", entry_id: gateway.entry_id, index: id })
-          : await this._hass.callWS({ type: "meshtastic/chat/node", entry_id: gateway.entry_id, node_id: id });
+      if (kind === "map") {
+        details.data = await this._hass.callWS({ type: "meshtastic/chat/map", entry_id: gateway.entry_id });
+      } else if (kind === "channel") {
+        details.data = await this._hass.callWS({ type: "meshtastic/chat/channel", entry_id: gateway.entry_id, index: id });
+      } else {
+        details.data = await this._hass.callWS({ type: "meshtastic/chat/node", entry_id: gateway.entry_id, node_id: id });
+      }
     } catch (err) {
       details.error = err.message || String(err);
     }
@@ -1205,7 +1209,7 @@ class MeshtasticChatPanel extends HTMLElement {
         entities,
         auto_fit: true,
         default_zoom: 13,
-        aspect_ratio: "16:9",
+        aspect_ratio: container.classList.contains("tall") ? "4:3" : "16:9",
         theme_mode: "auto",
       });
       card.hass = this._hass;
@@ -1227,6 +1231,9 @@ class MeshtasticChatPanel extends HTMLElement {
         <ha-menu-button></ha-menu-button>
         <div class="title">Mesh Chat</div>
         <select class="gateway-select" aria-label="Gateway" hidden></select>
+        <button class="icon-button toolbar-button" data-action="map" aria-label="Map of the mesh" title="Map of the mesh">
+          <ha-icon icon="mdi:map-marker-multiple-outline"></ha-icon>
+        </button>
       </div>
       <div class="layout">
         <aside class="sidebar">
@@ -1279,6 +1286,11 @@ class MeshtasticChatPanel extends HTMLElement {
       this._renderList();
     });
 
+    root.querySelector(".toolbar-button").addEventListener("click", () => {
+      if (this._details && this._details.kind === "map") this._closeDetails();
+      else this._openDetails("map", 0);
+    });
+
     this._gatewaySelect.addEventListener("change", () => {
       this._entryId = this._gatewaySelect.value;
       this._conversation = null;
@@ -1295,6 +1307,12 @@ class MeshtasticChatPanel extends HTMLElement {
       if (ev.target.closest("[data-action=new-channel]")) {
         ev.preventDefault();
         this._openNewChannel();
+        return;
+      }
+      if (ev.target.closest("[data-action=gateway-details]")) {
+        ev.preventDefault();
+        const gateway = this._gateway();
+        if (gateway && gateway.gateway.num !== null && gateway.gateway.num !== undefined) this._openDetails("node", gateway.gateway.num);
         return;
       }
       const star = ev.target.closest("[data-action=favorite]");
@@ -1349,6 +1367,7 @@ class MeshtasticChatPanel extends HTMLElement {
       else if (dataset.action === "navigate") this._navigate(dataset.href);
       else if (dataset.action === "more-info") this._moreInfo(dataset.entity);
       else if (dataset.action === "open-conversation") this._selectConversation(dataset.conversation);
+      else if (dataset.action === "open-node") this._openDetails("node", Number(dataset.node));
       else if (dataset.action === "copy") this._copyText(dataset.text);
       else if (dataset.action === "disable-channel") this._disableChannel();
     });
@@ -1376,6 +1395,8 @@ class MeshtasticChatPanel extends HTMLElement {
 
     this._messagesEl.addEventListener("click", (ev) => {
       if (ev.target.closest("[data-action=older]")) this._loadOlder();
+      const author = ev.target.closest("[data-action=dm]");
+      if (author && author.dataset.conversation !== this._conversation) this._selectConversation(author.dataset.conversation);
     });
 
     this._form.addEventListener("submit", (ev) => {
@@ -1479,8 +1500,22 @@ class MeshtasticChatPanel extends HTMLElement {
       : `<p class="empty warning">The gateway is not connected. History is still available.</p>`;
 
     const canCreate = gateway.can_manage_channels && (gateway.free_channel_indexes || []).length > 0;
+    const own = gateway.gateway || {};
+    const gatewayOpen = this._details && this._details.kind === "node" && this._details.id === own.num;
+    const gatewayRow =
+      own.num !== null && own.num !== undefined
+        ? `<div class="item gateway-row ${gatewayOpen ? "selected" : ""}" role="button" tabindex="0" data-action="gateway-details" title="Details of your gateway">
+             ${this._avatar(own.num, own.short_name)}
+             <span class="item-text">
+               <span class="item-title"><span class="name">${escapeHtml(own.long_name || gateway.title)}</span></span>
+               <span class="preview">Your gateway · ${escapeHtml(own.user_id || "")}</span>
+             </span>
+             <ha-icon icon="mdi:information-outline"></ha-icon>
+           </div>`
+        : "";
     this._listEl.innerHTML = `
       ${unavailable}
+      ${gatewayRow}
       <h2>Channels${
         canCreate
           ? `<button class="h2-action" data-action="new-channel" aria-label="New channel" title="New channel"><ha-icon icon="mdi:plus"></ha-icon></button>`
@@ -1627,7 +1662,9 @@ class MeshtasticChatPanel extends HTMLElement {
       const sentBy = outgoing && m.sent_by ? `<span class="via">${escapeHtml(m.sent_by)} via Home Assistant</span>` : "";
       const author =
         !outgoing && !continued
-          ? `<div class="author">${escapeHtml(m.from_name)} <span>${escapeHtml(m.from_user_id || "")}</span></div>`
+          ? `<button class="author" data-action="dm" data-conversation="node:${Number(m.from)}" title="Send a direct message">${escapeHtml(
+              m.from_name
+            )} <span>${escapeHtml(m.from_user_id || "")}</span></button>`
           : "";
 
       html += `
@@ -1677,12 +1714,23 @@ class MeshtasticChatPanel extends HTMLElement {
     }
 
     const conversation = details.kind === "channel" ? `channel:${details.id}` : `node:${details.id}`;
-    const info = this._conversationInfo(gateway, conversation) || {};
+    const ownGateway = details.kind === "node" && gateway.gateway && details.id === gateway.gateway.num;
+    const info = (ownGateway ? gateway.gateway : this._conversationInfo(gateway, conversation)) || {};
     const data = details.data;
     const subject = data || info;
 
     let header;
-    if (details.kind === "new-channel") {
+    if (details.kind === "map") {
+      const count = data ? data.nodes.length : 0;
+      header = `
+        <span class="avatar channel" aria-hidden="true"><ha-icon icon="mdi:map-marker-multiple-outline"></ha-icon></span>
+        <div class="details-title">
+          <div class="name">Map of the mesh</div>
+          <div class="subtitle">${escapeHtml(
+            data ? `${count} node${count === 1 ? "" : "s"} with a position · ${data.nodes_known} known to ${gateway.gateway.long_name || gateway.title}` : "Loading…"
+          )}</div>
+        </div>`;
+    } else if (details.kind === "new-channel") {
       header = `
         <span class="avatar channel" aria-hidden="true"><ha-icon icon="mdi:plus"></ha-icon></span>
         <div class="details-title">
@@ -1715,6 +1763,8 @@ class MeshtasticChatPanel extends HTMLElement {
       body = this._channelForm(null, details);
     } else if (!data) {
       body = `<p class="empty">Loading…</p>`;
+    } else if (details.kind === "map") {
+      body = this._mapBody(data);
     } else if (details.kind === "channel") {
       body = this._channelDetailsBody(data, details);
     } else {
@@ -1743,6 +1793,52 @@ class MeshtasticChatPanel extends HTMLElement {
     }
   }
 
+  _mapBody(data) {
+    const entities = data.nodes.map((n) => n.device_tracker).filter(Boolean);
+    const canEmbed = typeof window.loadCardHelpers === "function" && entities.length > 0;
+    const missing = data.nodes.filter((n) => !n.device_tracker).length;
+    const rows = data.nodes
+      .map((n) => {
+        const p = n.position;
+        const parts = [];
+        if (n.is_gateway) parts.push("your gateway");
+        else if (isSet(p.distance)) parts.push(`${formatDistance(p.distance)} · ${p.bearing}° ${compassPoint(p.bearing)}`);
+        if (p.time) parts.push(`position ${this._formatAgo(p.time)} ago`);
+        else if (n.last_heard) parts.push(`heard ${this._formatAgo(n.last_heard)} ago`);
+        return `
+          <button class="node-row" data-action="open-node" data-node="${n.num}" title="Node details">
+            ${this._avatar(n.num, n.short_name)}
+            <span class="item-text">
+              <span class="item-title">
+                <span class="name">${escapeHtml(n.long_name)}</span>
+                ${n.device_tracker ? "" : `<span class="badge">not on the map</span>`}
+              </span>
+              <span class="preview">${escapeHtml(parts.join(" · "))}</span>
+            </span>
+          </button>`;
+      })
+      .join("");
+    return `
+      ${entities.length ? `<div class="map tall" data-entities="${escapeHtml(JSON.stringify(entities))}"></div>` : ""}
+      ${
+        canEmbed
+          ? ""
+          : `<p class="hint">${
+              entities.length
+                ? "The map could not be embedded in this view."
+                : "None of the nodes with a position has a device tracker yet, so there is nothing to put on the map."
+            }</p>`
+      }
+      <div class="actions"><button class="chip-button" data-action="navigate" data-href="/map"><ha-icon icon="mdi:map"></ha-icon>Open the Map panel</button></div>
+      ${
+        missing
+          ? `<p class="hint">${missing} node${missing === 1 ? " has" : "s have"} a position but no device tracker: only nodes selected in the integration options are placed on the map.</p>`
+          : ""
+      }
+      <h3>Nodes with a position</h3>
+      <div class="node-list">${rows || `<p class="empty">No node has reported a position yet.</p>`}</div>`;
+  }
+
   _section(title, rows) {
     const items = rows.filter((row) => row && isSet(row[1]));
     if (!items.length) return "";
@@ -1763,7 +1859,25 @@ class MeshtasticChatPanel extends HTMLElement {
       ["Gateway", node.is_gateway ? "this is the connected node" : null],
     ]);
 
-    const radio = this._section("Radio", [
+    const g = node.gateway_info;
+    const gatewaySection = g
+      ? this._section("Gateway", [
+          ["Home Assistant entry", g.title],
+          ["Firmware", g.firmware_version],
+          ["Hardware", isSet(g.hw_model) ? prettyModel(g.hw_model) : null],
+          ["Role", isSet(g.role) ? prettyEnum(g.role) : null],
+          ["Region", isSet(g.region) ? prettyEnum(g.region).toUpperCase() : null],
+          ["Modem preset", isSet(g.modem_preset) ? prettyEnum(g.modem_preset) : null],
+          ["Hop limit", isSet(g.hop_limit) ? String(g.hop_limit) : null],
+          ["TX power", isSet(g.tx_power) ? `${g.tx_power} dBm` : null],
+          ["Transmit", g.tx_enabled === false ? "disabled" : null],
+          ["MQTT", g.mqtt_enabled ? "enabled" : "disabled"],
+          ["Channels", String(g.channels)],
+          ["Nodes known", String(g.nodes_known)],
+        ])
+      : "";
+
+    const radio = node.is_gateway ? "" : this._section("Radio", [
       ["Last heard", node.last_heard ? `${this._formatDateTime(node.last_heard)} (${this._formatAgo(node.last_heard)} ago)` : "never"],
       ["Hops away", isSet(node.hops_away) ? String(node.hops_away) : null],
       ["SNR", isSet(node.snr) ? `${formatNumber(node.snr, 1)} dB` : null],
@@ -1856,7 +1970,7 @@ class MeshtasticChatPanel extends HTMLElement {
       <p class="hint">Requests go over the mesh and can take up to a minute; the reply updates the values above.</p>
       ${["telemetry", "position", "traceroute"].map((key) => this._requestResult(key, details.results[key], node)).join("")}`;
 
-    return identity + radio + metrics + position + security + homeAssistant + actions;
+    return identity + gatewaySection + radio + metrics + position + security + homeAssistant + actions;
   }
 
   _requestResult(key, result, node) {
@@ -2521,6 +2635,13 @@ class MeshtasticChatPanel extends HTMLElement {
       .details .empty { padding: 24px 0; }
 
       .conversations h2 { display: flex; align-items: center; gap: 4px; }
+      .gateway-row { border-bottom: 1px solid var(--divider-color); margin-bottom: 4px; }
+      .gateway-row ha-icon { color: var(--secondary-text-color); --mdc-icon-size: 20px; }
+      .toolbar .toolbar-button { color: inherit; }
+      .toolbar .toolbar-button:hover { background: rgba(255, 255, 255, 0.15); }
+      button.author { border: none; background: none; padding: 0; cursor: pointer; text-align: left; }
+      button.author:hover .text, button.author:hover { text-decoration: underline; }
+      button.author:focus-visible { outline: 2px solid var(--primary-color); border-radius: 4px; }
       .h2-action {
         width: 24px;
         height: 24px;
