@@ -397,7 +397,13 @@ const qrSvg = (text, { module = 4, margin = 4 } = {}) => {
 const escapeHtml = (value) =>
   String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
-const errorText = (error) => (error && error.message) || String(error);
+// Home Assistant rejects a websocket call with { code, message }; fall back to what the error does carry rather
+// than printing "[object Object]"
+const errorText = (error) => {
+  if (error && typeof error.message === "string" && error.message) return error.message;
+  if (error && typeof error === "object") return error.code ? `Error: ${error.code}` : JSON.stringify(error);
+  return String(error);
+};
 
 const utf8Length = (text) => new TextEncoder().encode(text).length;
 
@@ -1483,6 +1489,7 @@ class MeshtasticChatPanel extends HTMLElement {
       details.results[request] = { ok: true, ts: Date.now() / 1000, result: response.result, type: message.telemetry_type };
       if (response.node) details.data = response.node;
     } catch (err) {
+      window.console.warn("[Mesh Chat] request failed", request, err);
       details.results[request] = { ok: false, ts: Date.now() / 1000, error: errorText(err), type: message.telemetry_type };
     }
     details.busy = null;

@@ -421,7 +421,7 @@ class MeshtasticApiClient:
             response = await self._interface.request_telemetry(node, telemetry_type=telemetry_type)
             return self._message_to_dict(response)
         except MeshRoutingError as e:
-            msg = f"No response for {telemetry_type}"
+            msg = f"No response for {telemetry_type}: {e}"
             raise MeshtasticApiClientError(msg) from e
         except MeshtasticError as e:
             raise MeshtasticApiClientError(str(e)) from e

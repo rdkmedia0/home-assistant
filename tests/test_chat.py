@@ -16,8 +16,8 @@ from homeassistant.helpers import device_registry as dr
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_capture_events
 
 from custom_components.meshtastic.aiomeshtastic.connection import ClientApiConnection
-from custom_components.meshtastic.aiomeshtastic.errors import MeshtasticError
-from custom_components.meshtastic.aiomeshtastic.interface import MeshInterface, MeshNode
+from custom_components.meshtastic.aiomeshtastic.errors import MeshRoutingError, MeshtasticError
+from custom_components.meshtastic.aiomeshtastic.interface import MeshInterface, MeshNode, TelemetryType
 from custom_components.meshtastic.aiomeshtastic.protobuf import (
     admin_pb2,
     apponly_pb2,
@@ -1207,3 +1207,19 @@ async def test_gateway_position_accuracy_follows_its_primary_channel(chat_setup)
     assert (await chat.async_node_details(GATEWAY))["position"]["accuracy"] == 0
     client.channels[0]["settings"]["moduleSettings"] = {"positionPrecision": 0}
     assert (await chat.async_node_details(GATEWAY))["position"]["accuracy"] is None
+
+
+def test_routing_error_names_the_error_and_says_what_it_means() -> None:
+    message = str(MeshRoutingError(5))
+    assert message.startswith("Routing error: MAX_RETRANSMIT (")
+    assert "out of range" in message
+    # an error without an explanation (or one this version does not know) still names itself
+    assert str(MeshRoutingError(0)) == "Routing error: NONE"
+    assert str(MeshRoutingError(99)) == "Routing error: 99"
+
+
+async def test_api_client_telemetry_failure_names_the_routing_error() -> None:
+    client = MeshtasticApiClient.__new__(MeshtasticApiClient)
+    client._interface = SimpleNamespace(request_telemetry=AsyncMock(side_effect=MeshRoutingError(5)))  # noqa: SLF001
+    with pytest.raises(MeshtasticApiClientError, match="No response for device_metrics: Routing error: MAX_RETRANSMIT"):
+        await client.request_telemetry(ANNA, TelemetryType.DEVICE_METRICS)
