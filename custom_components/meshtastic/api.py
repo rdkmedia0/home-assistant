@@ -240,16 +240,21 @@ class MeshtasticApiClient:
         else:
             return True
 
-    async def send_text_with_ack(
+    async def send_text_with_ack(  # noqa: PLR0913
         self,
         text: str,
         destination_id: int = MeshInterface.BROADCAST_NUM,
         *,
         channel_index: int | None = None,
         ack_timeout: float = 60,
+        packet_id: int | None = None,
+        reply_id: int | None = None,
     ) -> tuple[int | None, str | None]:
         """
         Send a text message requesting an acknowledgement.
+
+        ``reply_id`` marks it as the answer to the packet with that id, ``packet_id`` (see ``new_packet_id``)
+        fixes the id of the new packet.
 
         Returns (node id that sent the routing ack, routing error name). Both are None if no acknowledgement
         arrived before the timeout. An error name of "NONE" means the packet was acknowledged without error.
@@ -261,6 +266,8 @@ class MeshtasticApiClient:
                     destination=destination_id,
                     want_ack=True,
                     channel_index=channel_index,
+                    packet_id=packet_id,
+                    reply_id=reply_id,
                 ),
                 timeout=ack_timeout,
             )
@@ -277,6 +284,9 @@ class MeshtasticApiClient:
         if isinstance(routing, mesh_pb2.Routing):
             error_name = mesh_pb2.Routing.Error.Name(routing.error_reason)
         return ack_packet.from_id, error_name
+
+    def new_packet_id(self) -> int:
+        return self._interface.generate_packet_id()
 
     @property
     def metadata(self) -> Mapping[str, Any]:
@@ -316,6 +326,7 @@ class MeshtasticApiClient:
             to_node = packet.to_id
 
         mesh_packet = packet.mesh_packet
+        reply_id = packet.data.reply_id if packet.data is not None else 0
         hops = None
         if mesh_packet is not None and mesh_packet.hop_start:
             hops = max(0, mesh_packet.hop_start - mesh_packet.hop_limit)
@@ -330,6 +341,8 @@ class MeshtasticApiClient:
                 "rx_snr": mesh_packet.rx_snr if mesh_packet is not None and mesh_packet.rx_snr else None,
                 "rx_rssi": mesh_packet.rx_rssi if mesh_packet is not None and mesh_packet.rx_rssi else None,
                 "hops": hops,
+                # the packet this message answers, when it is a reply
+                "reply_id": reply_id or None,
             },
         )
 

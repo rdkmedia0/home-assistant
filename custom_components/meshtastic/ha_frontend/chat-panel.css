@@ -573,3 +573,101 @@ a.chip-button { text-decoration: none; color: inherit; }
 .layout.narrow .bubble { max-width: 85%; }
 /* the map replaces the conversation on phones too; the ordinary narrow rules above would show the thread */
 .layout.narrow.show-map .thread, .layout.narrow.show-map.show-thread .thread { display: none; }
+
+/* replies and emoji */
+.reply-button {
+  align-self: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--secondary-text-color);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  opacity: 0;
+  --mdc-icon-size: 18px;
+}
+.row:hover .reply-button, .reply-button:focus-visible { opacity: 1; }
+.reply-button:hover { background: var(--secondary-background-color); }
+@media (hover: none) { .reply-button { opacity: 0.6; } }
+.quote {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 6px;
+  padding: 4px 8px;
+  border-left: 3px solid var(--primary-color);
+  border-radius: 4px;
+  background: var(--secondary-background-color);
+  font-size: 12px;
+  line-height: 1.3;
+}
+.quote[data-action] { cursor: pointer; }
+.quote-name { font-weight: 600; color: var(--primary-color); }
+.quote-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 36ch; }
+.row.out .quote { background: rgba(0, 0, 0, 0.18); border-left-color: currentColor; }
+.row.out .quote-name { color: inherit; }
+.row.flash .bubble { animation: flash 1.5s ease-out; }
+@keyframes flash { from { box-shadow: 0 0 0 3px var(--primary-color); } to { box-shadow: 0 0 0 3px transparent; } }
+
+.reply-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 16px;
+  border-top: 1px solid var(--divider-color);
+  background: var(--card-background-color);
+  color: var(--secondary-text-color);
+}
+.reply-bar[hidden] { display: none; }
+.reply-bar-text { flex: 1; min-width: 0; display: flex; flex-direction: column; font-size: 12px; }
+.reply-bar-name { font-weight: 600; color: var(--primary-color); }
+.reply-bar-snippet { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.emoji-toggle {
+  width: 28px;
+  height: 28px;
+  margin: 0 6px 0 -6px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--secondary-text-color);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  --mdc-icon-size: 22px;
+}
+.emoji-toggle:hover:not(:disabled) { color: var(--primary-text-color); }
+.emoji-toggle:disabled { opacity: 0.4; cursor: default; }
+.emoji-picker {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px 12px 8px;
+  border-top: 1px solid var(--divider-color);
+  background: var(--card-background-color);
+}
+.emoji-group h3 {
+  margin: 8px 0 2px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--secondary-text-color);
+}
+.emoji {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+.emoji:hover, .emoji:focus-visible { background: var(--secondary-background-color); }

@@ -56,6 +56,16 @@ const KEY_CHOICES = [
   ["none", "No encryption"],
   ["custom", "Enter a key (base64)"],
 ];
+// the emoji of the picker; a message is limited in bytes and these take 3 to 7 of them each
+const EMOJI_GROUPS = [
+  ["Smileys", "😀 😃 😄 😁 😆 😅 😂 🤣 🙂 😉 😊 😇 😍 😘 😋 😎 🤔 😐 😴 😢 😭 😡 😱 🥶 🥵"],
+  ["Gestures", "👍 👎 👌 ✌️ 🤞 🤝 👏 🙌 🙏 💪 👋 ☝️ 👀"],
+  ["Hearts and symbols", "❤️ 🧡 💛 💚 💙 💜 🖤 💔 💯 ✨ 🔥 ⭐ 🎉"],
+  ["Outdoors and travel", "⛰️ 🏔️ 🥾 🏕️ 🌲 🌳 🌄 🌅 🧭 🔦 🚶 🚴 🚗 🚁 ✈️ 🏠 📍 🗺️"],
+  ["Weather", "☀️ ⛅ ☁️ 🌧️ ⛈️ ❄️ 🌨️ 💨 🌈 🌡️"],
+  ["Radio and things", "📡 📻 📶 🔋 📱 💬 📢 ⚠️ 🚨 🆘 ✅ ❌ ❓ ❗ ⏰ ☕ 🍺 🍕 🍔 🔔"],
+].map(([title, emoji]) => [title, emoji.split(" ")]);
+const REPLY_SNIPPET_CHARS = 120;
 const PRECISION_BITS = [0, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32];
 // nodes without a device tracker are shown to ha-map as states under this prefix (they never reach Home Assistant)
 // a position shared with less precision is drawn as a circle of its accuracy around the marker; beyond this radius
@@ -524,6 +534,7 @@ class MeshtasticChatPanel extends HTMLElement {
     this._mapStates = null;
     this._mapView = null; // { data, focus, filter, element } while the full map is shown
     this._tooltipTimer = null;
+    this._reply = null; // { entryId, conversation, id, name, text } while a message is being answered
   }
 
   set hass(hass) {
@@ -840,6 +851,7 @@ class MeshtasticChatPanel extends HTMLElement {
 
   async _selectConversation(conversation, { showThread = true } = {}) {
     const changed = conversation !== this._conversation;
+    if (changed) this._cancelReply();
     this._conversation = conversation;
     this._showThread = showThread;
     if (this._entryId && conversation) {
@@ -878,6 +890,7 @@ class MeshtasticChatPanel extends HTMLElement {
     if (!gateway || !conversation || !text || this._sending) return;
     if (this._composedLength(text) > gateway.max_bytes) return;
 
+    const reply = this._reply && this._reply.entryId === gateway.entry_id && this._reply.conversation === conversation ? this._reply : null;
     this._sending = true;
     this._updateComposer();
     try {
@@ -886,6 +899,7 @@ class MeshtasticChatPanel extends HTMLElement {
         entry_id: gateway.entry_id,
         conversation,
         text,
+        ...(reply ? { reply_to: reply.id } : {}),
       });
       // the user may have moved on while the request was pending: the result belongs to the conversation it
       // was sent in. Normally the subscription delivers the message first; this covers a missing subscription.
@@ -899,6 +913,7 @@ class MeshtasticChatPanel extends HTMLElement {
         this._textarea.value = "";
         this._autoGrow();
       }
+      if (this._reply === reply) this._cancelReply();
     } catch (err) {
       this._showError(errorText(err));
     } finally {
@@ -906,6 +921,62 @@ class MeshtasticChatPanel extends HTMLElement {
       this._updateComposer();
       this._textarea.focus();
     }
+  }
+
+  // ---------- replies and emoji ----------
+
+  _startReply(id) {
+    const messages = this._messages.get(`${this._entryId}|${this._conversation}`) || [];
+    const message = messages.find((m) => m.id === id);
+    if (!message || !message.packet_id) return;
+    this._reply = {
+      entryId: this._entryId,
+      conversation: this._conversation,
+      id: message.id,
+      name: message.direction === "out" ? "You" : message.from_name,
+      text: message.text.slice(0, REPLY_SNIPPET_CHARS),
+    };
+    this._renderReplyBar();
+    this._textarea.focus();
+  }
+
+  _cancelReply() {
+    if (!this._reply) return;
+    this._reply = null;
+    this._renderReplyBar();
+  }
+
+  _renderReplyBar() {
+    if (!this._replyEl) return;
+    this._replyEl.hidden = !this._reply;
+    if (!this._reply) return;
+    this._replyEl.querySelector(".reply-bar-name").textContent = `Replying to ${this._reply.name}`;
+    this._replyEl.querySelector(".reply-bar-snippet").textContent = this._reply.text;
+  }
+
+  // scroll to a quoted message and highlight it; nothing happens when it is not loaded (older than the page)
+  _flashMessage(id) {
+    const row = [...this._messagesEl.querySelectorAll("[data-message]")].find((el) => el.dataset.message === id);
+    if (!row) return;
+    row.scrollIntoView({ block: "center", behavior: "smooth" });
+    row.classList.add("flash");
+    window.setTimeout(() => row.classList.remove("flash"), 1500);
+  }
+
+  _toggleEmojiPicker(open = this._emojiEl.hidden) {
+    this._emojiEl.hidden = !open;
+    this._emojiButton.setAttribute("aria-expanded", String(open));
+  }
+
+  _insertEmoji(emoji) {
+    const textarea = this._textarea;
+    if (textarea.disabled) return;
+    const start = textarea.selectionStart ?? textarea.value.length;
+    const end = textarea.selectionEnd ?? start;
+    textarea.setRangeText(emoji, start, end, "end");
+    textarea.focus();
+    this._autoGrow();
+    this._updateComposer();
   }
 
   async _clearConversation() {
@@ -1605,8 +1676,24 @@ class MeshtasticChatPanel extends HTMLElement {
           <header class="thread-header"></header>
           <div class="messages" role="log" aria-live="polite"></div>
           <div class="error" role="alert" hidden></div>
+          <div class="emoji-picker" role="group" aria-label="Emoji" hidden>${EMOJI_GROUPS.map(
+            ([title, emoji]) =>
+              `<div class="emoji-group" role="group" aria-label="${escapeHtml(title)}"><h3>${escapeHtml(title)}</h3>${emoji
+                .map((e) => `<button type="button" class="emoji" data-emoji="${e}" aria-label="${e}">${e}</button>`)
+                .join("")}</div>`
+          ).join("")}</div>
+          <div class="reply-bar" hidden>
+            <ha-icon icon="mdi:reply"></ha-icon>
+            <div class="reply-bar-text"><span class="reply-bar-name"></span><span class="reply-bar-snippet"></span></div>
+            <button type="button" class="icon-button" data-action="cancel-reply" aria-label="Cancel reply" title="Cancel reply">
+              <ha-icon icon="mdi:close"></ha-icon>
+            </button>
+          </div>
           <form class="composer">
             <div class="composer-field">
+              <button type="button" class="emoji-toggle" data-action="emoji" aria-label="Emoji" aria-expanded="false" title="Emoji">
+                <ha-icon icon="mdi:emoticon-happy-outline"></ha-icon>
+              </button>
               <textarea rows="1" aria-label="Message"></textarea>
               <span class="counter"></span>
             </div>
@@ -1635,6 +1722,9 @@ class MeshtasticChatPanel extends HTMLElement {
     this._fullMapEl = root.querySelector(".fullmap");
     this._detailsErrorEl = null;
     this._tooltipEl = root.querySelector(".tooltip");
+    this._replyEl = root.querySelector(".reply-bar");
+    this._emojiEl = root.querySelector(".emoji-picker");
+    this._emojiButton = root.querySelector(".emoji-toggle");
     this._form = root.querySelector(".composer");
     this._textarea = root.querySelector("textarea");
     this._counter = root.querySelector(".counter");
@@ -1775,6 +1865,30 @@ class MeshtasticChatPanel extends HTMLElement {
       if (ev.target.closest("[data-action=older]")) this._loadOlder();
       const author = ev.target.closest("[data-action=dm]");
       if (author && author.dataset.conversation !== this._conversation) this._selectConversation(author.dataset.conversation);
+      const reply = ev.target.closest("[data-action=reply]");
+      if (reply) this._startReply(reply.dataset.id);
+      const quote = ev.target.closest("[data-action=goto]");
+      if (quote) this._flashMessage(quote.dataset.id);
+    });
+
+    this._messagesEl.addEventListener("keydown", (ev) => {
+      const quote = ev.target.closest("[data-action=goto]");
+      if (quote && (ev.key === "Enter" || ev.key === " ")) {
+        ev.preventDefault();
+        this._flashMessage(quote.dataset.id);
+      }
+    });
+
+    this._replyEl.addEventListener("click", (ev) => {
+      if (ev.target.closest("[data-action=cancel-reply]")) this._cancelReply();
+    });
+
+    this._emojiButton.addEventListener("click", () => this._toggleEmojiPicker());
+    // keep the focus (and the cursor) in the message while an emoji is picked
+    this._emojiEl.addEventListener("mousedown", (ev) => ev.preventDefault());
+    this._emojiEl.addEventListener("click", (ev) => {
+      const emoji = ev.target.closest("[data-emoji]");
+      if (emoji) this._insertEmoji(emoji.dataset.emoji);
     });
 
     this._form.addEventListener("submit", (ev) => {
@@ -1786,6 +1900,10 @@ class MeshtasticChatPanel extends HTMLElement {
       if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
         ev.preventDefault();
         this._send();
+      } else if (ev.key === "Escape") {
+        // first the picker, then the reply
+        if (!this._emojiEl.hidden) this._toggleEmojiPicker(false);
+        else this._cancelReply();
       }
     });
 
@@ -2052,19 +2170,38 @@ class MeshtasticChatPanel extends HTMLElement {
             )} <span>${escapeHtml(m.from_user_id || "")}</span></button>`
           : "";
 
+      const replyButton =
+        m.packet_id && m.status !== "failed"
+          ? `<button class="reply-button" data-action="reply" data-id="${escapeHtml(m.id)}" aria-label="Reply" title="Reply"><ha-icon icon="mdi:reply"></ha-icon></button>`
+          : "";
+
       html += `
-        <div class="row ${outgoing ? "out" : "in"} ${continued ? "continued" : ""}">
+        <div class="row ${outgoing ? "out" : "in"} ${continued ? "continued" : ""}" data-message="${escapeHtml(m.id)}">
           ${!outgoing ? (continued ? '<span class="avatar spacer"></span>' : this._avatar(m.from, m.from_short)) : ""}
+          ${outgoing ? replyButton : ""}
           <div class="bubble ${m.status === "failed" ? "failed" : ""}">
             ${author}
+            ${this._quoteHtml(m, gateway)}
             <div class="text">${escapeHtml(m.text)}</div>
             <div class="footer">${sentBy}${signal}${footer}</div>
           </div>
+          ${!outgoing ? replyButton : ""}
         </div>`;
     }
 
     scroller.innerHTML = html;
     if (stickToBottom || atBottom) scroller.scrollTop = scroller.scrollHeight;
+  }
+
+  // the quoted message of a reply: who said what, kept with the reply; clicking it jumps to the original
+  _quoteHtml(message, gateway) {
+    if (!message.reply_to) return "";
+    const quote = message.reply_preview;
+    if (!quote) return `<div class="quote"><span class="quote-text">Reply to an earlier message</span></div>`;
+    const own = gateway.gateway && quote.from === gateway.gateway.num;
+    return `<div class="quote" data-action="goto" data-id="${escapeHtml(quote.id)}" role="button" tabindex="0"><span class="quote-name">${escapeHtml(
+      own ? "You" : quote.name
+    )}</span><span class="quote-text">${escapeHtml(quote.text)}</span></div>`;
   }
 
   _updateComposer() {
@@ -2077,6 +2214,7 @@ class MeshtasticChatPanel extends HTMLElement {
     const tooLong = length > max;
 
     this._textarea.disabled = !enabled;
+    this._emojiButton.disabled = !enabled;
     this._sendButton.disabled = !enabled || !text || tooLong || !!this._sending;
     this._counter.textContent = text ? `${length}/${max}` : "";
     this._counter.classList.toggle("over", tooLong);

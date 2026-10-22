@@ -15,6 +15,7 @@ import voluptuous as vol
 from homeassistant.helpers import device_registry as dr
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_capture_events
 
+from custom_components.meshtastic.aiomeshtastic.connection import ClientApiConnection
 from custom_components.meshtastic.aiomeshtastic.errors import MeshtasticError
 from custom_components.meshtastic.aiomeshtastic.interface import MeshInterface, MeshNode
 from custom_components.meshtastic.aiomeshtastic.protobuf import (
@@ -54,6 +55,8 @@ BROADCAST = 0xFFFFFFFF
 class FakeClient:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
+        self.sent_ids: list[tuple[int | None, int | None]] = []  # (packet id, reply id) of what was sent
+        self._packet_id = 1000
         self.ack: tuple[int | None, str | None] | Exception = (GATEWAY, "NONE")
         self.favorites: set[int] = {ANNA}
         self.favorite_calls: list[tuple[int, bool]] = []
@@ -81,10 +84,22 @@ class FakeClient:
             return MeshNode(id=GATEWAY, user_id="!00004904", short_name="4904", long_name="Home Gateway")
         return None
 
-    async def send_text_with_ack(
-        self, text: str, destination_id: int, *, channel_index: int | None = None, ack_timeout: float = 60
+    def new_packet_id(self) -> int:
+        self._packet_id += 1
+        return self._packet_id
+
+    async def send_text_with_ack(  # noqa: PLR0913
+        self,
+        text: str,
+        destination_id: int,
+        *,
+        channel_index: int | None = None,
+        ack_timeout: float = 60,
+        packet_id: int | None = None,
+        reply_id: int | None = None,
     ) -> tuple[int | None, str | None]:
         self.sent.append({"text": text, "to": destination_id, "channel": channel_index, "timeout": ack_timeout})
+        self.sent_ids.append((packet_id, reply_id))
         if isinstance(self.ack, Exception):
             raise self.ack
         return self.ack
@@ -1030,12 +1045,13 @@ async def test_api_text_message_event_carries_the_signal() -> None:
     client._interface = SimpleNamespace(connected_node=lambda: {"num": GATEWAY})  # noqa: SLF001
     node = MeshNode(id=ANNA, user_id="!a1b2c3d4", short_name="ANNA", long_name="Anna Hiking")
 
-    def packet(**mesh: Any) -> SimpleNamespace:
+    def packet(reply_id: int = 0, **mesh: Any) -> SimpleNamespace:
         return SimpleNamespace(
             from_id=ANNA,
             to_id=BROADCAST,
             channel_index=1,
             app_payload="hello",
+            data=SimpleNamespace(reply_id=reply_id),
             mesh_packet=SimpleNamespace(
                 **{"id": 42, "rx_snr": 0.0, "rx_rssi": 0, "hop_start": 0, "hop_limit": 0, **mesh}
             ),
@@ -1051,3 +1067,122 @@ async def test_api_text_message_event_carries_the_signal() -> None:
     await client._on_text_message(node, packet())  # noqa: SLF001
     event = client._hass.bus.async_fire.call_args.args[1]  # noqa: SLF001
     assert (event["data"]["rx_snr"], event["data"]["rx_rssi"], event["data"]["hops"]) == (None, None, None)
+    assert event["data"]["reply_id"] is None
+
+    # a reply names the packet it answers
+    await client._on_text_message(node, packet(reply_id=777))  # noqa: SLF001
+    event = client._hass.bus.async_fire.call_args.args[1]  # noqa: SLF001
+    assert event["data"]["reply_id"] == 777
+
+
+async def test_interface_sends_a_reply_with_its_own_packet_id() -> None:
+    interface = MeshInterface(connection=MagicMock())
+    interface._connected_node_info = SimpleNamespace(my_node_num=GATEWAY)  # noqa: SLF001
+    interface._connection.send_mesh_packet = AsyncMock(return_value=None)  # noqa: SLF001
+
+    await interface.send_text_message("agreed", ANNA, packet_id=555, reply_id=321)
+    kwargs = interface._connection.send_mesh_packet.call_args.kwargs  # noqa: SLF001
+    assert (kwargs["packet_id"], kwargs["reply_id"], kwargs["message"]) == (555, 321, b"agreed")
+
+    interface._connection.generate_packet_id = lambda: 99  # noqa: SLF001
+    assert interface.generate_packet_id() == 99
+
+
+async def test_connection_marks_the_packet_as_a_reply() -> None:
+    sent = []
+
+    class Connection(ClientApiConnection):
+        async def send_packet(self, to_radio: Any) -> bool:
+            sent.append(to_radio.packet)
+            return True
+
+    connection = Connection.__new__(Connection)
+    connection._current_packet_id = None  # noqa: SLF001
+    await connection.send_mesh_packet(ANNA, b"hi", packet_id=555, reply_id=321)
+    assert (sent[-1].id, sent[-1].decoded.reply_id) == (555, 321)
+
+    await connection.send_mesh_packet(ANNA, b"hi")
+    assert sent[-1].id != 555
+    assert sent[-1].decoded.reply_id == 0
+
+
+async def test_reply_is_sent_with_the_packet_id_and_kept_with_the_quote(hass: HomeAssistant, chat_setup) -> None:
+    entry, chat, client = chat_setup
+    _fire_text(hass, entry, channel=1, message_id=7001, text="Who is up for a hike on Saturday afternoon?")
+    await hass.async_block_till_done()
+    original = chat.history("channel:1")[-1]
+
+    message = await chat.async_send("channel:1", "Count me in", reply_to=original["id"])
+    await hass.async_block_till_done()
+    assert message["reply_to"] == 7001
+    assert message["reply_preview"] == {
+        "id": original["id"],
+        "from": ANNA,
+        "name": "Anna Hiking",
+        "text": "Who is up for a hike on Saturday afternoon?",
+    }
+    assert client.sent_ids[-1] == (message["packet_id"], 7001)
+    assert message["packet_id"] is not None
+
+    # replying to our own message works as soon as it is sent: its packet id was chosen up front
+    again = await chat.async_send("channel:1", "Meet at 2", reply_to=message["id"])
+    await hass.async_block_till_done()
+    assert client.sent_ids[-1] == (again["packet_id"], message["packet_id"])
+    assert again["reply_preview"]["text"] == "Count me in"
+
+    # a message of another conversation, an unknown one or one without a packet id cannot be answered
+    for reply_to in ("nope", original["id"]):
+        with pytest.raises(vol.Invalid, match="not available"):
+            await chat.async_send("channel:0", "x", reply_to=reply_to)
+    chat._conversations["channel:1"][0]["packet_id"] = None  # noqa: SLF001
+    with pytest.raises(vol.Invalid, match="not available"):
+        await chat.async_send("channel:1", "x", reply_to=chat.history("channel:1")[0]["id"])
+
+
+async def test_received_reply_is_linked_to_the_quoted_message(hass: HomeAssistant, chat_setup) -> None:
+    entry, chat, _ = chat_setup
+    _fire_text(hass, entry, channel=1, message_id=7001, text="x" * 120)
+    for message_id, text, reply_id in ((7002, "agreed", 7001), (7003, "late", 1)):
+        hass.bus.async_fire(
+            EVENT_MESHTASTIC_API_TEXT_MESSAGE,
+            {
+                "config_entry_id": entry.entry_id,
+                "message_id": message_id,
+                "data": {"from": RELAY, "to": {"node": None, "channel": 1}, "message": text, "reply_id": reply_id},
+            },
+        )
+    await hass.async_block_till_done()
+    first, reply, unknown = chat.history("channel:1")
+    assert first["reply_to"] is None
+    assert first["reply_preview"] is None
+    assert reply["reply_to"] == 7001
+    assert reply["reply_preview"]["name"] == "Anna Hiking"
+    assert reply["reply_preview"]["text"] == "x" * 80  # the quote is shortened
+    # the original is not in the history any more: the reply still knows what it answers
+    assert unknown["reply_to"] == 1
+    assert unknown["reply_preview"] is None
+
+
+async def test_websocket_send_a_reply(hass: HomeAssistant, hass_ws_client, chat_setup) -> None:
+    entry, chat, _ = chat_setup
+    ws = await hass_ws_client(hass)
+    _fire_text(hass, entry, channel=1, message_id=7001, text="question")
+    await hass.async_block_till_done()
+    original = chat.history("channel:1")[-1]
+
+    request = {
+        "type": "meshtastic/chat/send",
+        "entry_id": entry.entry_id,
+        "conversation": "channel:1",
+        "text": "answer",
+    }
+    await ws.send_json({"id": 1, **request, "reply_to": original["id"]})
+    response = await ws.receive_json()
+    assert response["success"]
+    assert response["result"]["reply_to"] == 7001
+    assert response["result"]["reply_preview"]["text"] == "question"
+
+    await ws.send_json({"id": 2, **request, "reply_to": "nope"})
+    response = await ws.receive_json()
+    assert not response["success"]
+    assert "not available" in response["error"]["message"]

@@ -346,9 +346,27 @@ and to every user once a gateway allows non-administrators (see the options belo
 | `!` on a sent message | failed, with the routing error as tooltip |
 | "… via Home Assistant" under a message | which Home Assistant user, automation or bridge sent it |
 | "6.3 dB · -92 dBm · 1 hop" under a received message | how the gateway heard it: signal to noise, signal strength, and how many relays it passed ("direct" when none) |
-| Byte counter next to the composer | Meshtastic text messages are limited to 200 bytes, prefix included |
+| Byte counter next to the composer | Meshtastic text messages are limited to 200 bytes, prefix included; an emoji takes 4 to 7 of them |
+| ↩ next to a message | reply to it (see below) |
+| Grey box with a name above a message | the message it answers; click it to jump to the original |
+| ☺ in the composer | opens the emoji picker |
 | Bin icon in the header | administrators can delete the stored history of a conversation; messages on devices are not affected |
 | Name or ⓘ in the header | opens the details of the node or channel (see below) |
+
+### Replies and emoji
+
+<p align="center"><img src="docs/mesh-chat/replies.png" width="800" alt="Reply bar above the composer, quoted messages and the emoji picker"></p>
+
+Point at a message and press ↩ (on a touch screen the button is always shown) to answer it: the message appears above
+the composer, and Escape or ✕ drops the reply again. The answer is sent as a native Meshtastic reply, so the Meshtastic
+apps show it as a quote as well and it costs no extra bytes. Replies you receive from the mesh show the quoted
+message in the same way; the quoted text is kept with the reply, so it is still there after the original has been
+deleted from the history. Only messages that carry a packet id can be answered, which is every message received or
+sent since this feature exists.
+
+☺ in the composer opens a picker with a few dozen emoji (smileys, gestures, outdoors, weather, radio); a click puts the
+emoji at the cursor. Emoji are plain text on the mesh, so every Meshtastic app shows them, but each takes several of
+the 200 bytes of a message, and small device screens may not be able to draw them.
 
 ### Node details, favourites and the map
 

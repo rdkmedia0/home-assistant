@@ -56,6 +56,7 @@ from .const import (
     CHAT_HISTORY_PAGE_SIZE_MAX,
     CHAT_MAX_TEXT_BYTES,
     CHAT_POSITION_PRECISION_FULL,
+    CHAT_REPLY_PREVIEW_CHARS,
     CHAT_STORAGE_SAVE_DELAY,
     CHAT_STORAGE_VERSION,
     CONF_OPTION_CHAT,
@@ -384,11 +385,15 @@ class MeshtasticChat:
                 return
 
         long_name, short_name, user_id = self._node_names(from_id)
+        reply_id = data.get("reply_id")
+        quoted = self._find_message(conversation, packet_id=reply_id) if reply_id else None
         self._append(
             conversation,
             {
                 "id": uuid.uuid4().hex,
                 "packet_id": packet_id,
+                "reply_to": reply_id,
+                "reply_preview": self._reply_preview(quoted),
                 "ts": time.time(),
                 "direction": "in",
                 "from": from_id,
@@ -402,6 +407,28 @@ class MeshtasticChat:
                 "hops": data.get("hops"),
             },
         )
+
+    def _find_message(
+        self, conversation: str, *, message_id: str | None = None, packet_id: int | None = None
+    ) -> dict[str, Any] | None:
+        for message in reversed(self._conversations.get(conversation, [])):
+            if (message_id is not None and message["id"] == message_id) or (
+                packet_id is not None and message.get("packet_id") == packet_id
+            ):
+                return message
+        return None
+
+    @staticmethod
+    def _reply_preview(message: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        """Keep who said what with a reply, so the quote is still there when the original is long gone."""
+        if message is None:
+            return None
+        return {
+            "id": message["id"],
+            "from": message["from"],
+            "name": message["from_name"],
+            "text": message["text"][:CHAT_REPLY_PREVIEW_CHARS],
+        }
 
     def history(
         self, conversation: str, before: float | None = None, limit: int = CHAT_HISTORY_PAGE_SIZE
@@ -805,7 +832,7 @@ class MeshtasticChat:
             text = f"{prefix}: {text}"
         return text
 
-    async def async_send(
+    async def async_send(  # noqa: PLR0913
         self,
         conversation: str,
         text: str,
@@ -813,6 +840,7 @@ class MeshtasticChat:
         *,
         sent_by: str | None = None,
         channel_index: int | None = None,
+        reply_to: str | None = None,
     ) -> dict[str, Any]:
         """
         Send a message and keep it in the history.
@@ -821,6 +849,8 @@ class MeshtasticChat:
         ``sent_by`` labels messages sent on behalf of someone else, e.g. by an automation or a bridge.
         ``channel_index`` optionally selects the channel a direct message is sent on; by default the client
         decides (the node's PKI channel or the primary channel).
+        ``reply_to`` is the id of a message of the same conversation this one answers: it is sent as a Meshtastic
+        reply (the apps show it as a quote) and kept with the quoted text.
         """
         kind, target = parse_conversation(conversation)
         prefix = self.prefix_for(user)
@@ -832,6 +862,13 @@ class MeshtasticChat:
             msg = f"Message is longer than {CHAT_MAX_TEXT_BYTES} bytes"
             raise vol.Invalid(msg)
 
+        quoted = None
+        if reply_to is not None:
+            quoted = self._find_message(conversation, message_id=reply_to)
+            if quoted is None or quoted.get("packet_id") is None:
+                msg = "The message to reply to is not available"
+                raise vol.Invalid(msg)
+
         if kind == CONVERSATION_CHANNEL:
             destination = MeshInterface.BROADCAST_NUM
             channel_index = target
@@ -842,7 +879,10 @@ class MeshtasticChat:
         long_name, short_name, user_id = self._node_names(gateway_id)
         message = {
             "id": uuid.uuid4().hex,
-            "packet_id": None,
+            # chosen here so that a reply can point at this message before the mesh has acknowledged it
+            "packet_id": self.entry.runtime_data.client.new_packet_id(),
+            "reply_to": quoted["packet_id"] if quoted else None,
+            "reply_preview": self._reply_preview(quoted),
             "ts": time.time(),
             "direction": "out",
             "from": gateway_id,
@@ -871,7 +911,12 @@ class MeshtasticChat:
         client = self.entry.runtime_data.client
         try:
             ack_from, error = await client.send_text_with_ack(
-                message["text"], destination, channel_index=channel_index, ack_timeout=CHAT_ACK_TIMEOUT
+                message["text"],
+                destination,
+                channel_index=channel_index,
+                ack_timeout=CHAT_ACK_TIMEOUT,
+                packet_id=message["packet_id"],
+                reply_id=message["reply_to"],
             )
         except asyncio.CancelledError:
             message["status"] = MessageStatus.NO_ACK
@@ -1069,6 +1114,7 @@ def websocket_chat_history(
         vol.Required("entry_id"): str,
         vol.Required("conversation"): str,
         vol.Required("text"): str,
+        vol.Optional("reply_to"): str,
     }
 )
 @websocket_api.async_response
@@ -1078,7 +1124,7 @@ async def websocket_chat_send(
     if (chat := _get_chat(hass, connection, msg)) is None:
         return
     try:
-        message = await chat.async_send(msg["conversation"], msg["text"], connection.user)
+        message = await chat.async_send(msg["conversation"], msg["text"], connection.user, reply_to=msg.get("reply_to"))
     except vol.Invalid as e:
         connection.send_error(msg["id"], websocket_api.ERR_INVALID_FORMAT, str(e))
         return

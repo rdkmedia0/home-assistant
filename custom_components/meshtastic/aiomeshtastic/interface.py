@@ -1095,7 +1095,7 @@ class MeshInterface:
                 return c.index
         return 0
 
-    async def send_text_message(
+    async def send_text_message(  # noqa: PLR0913
         self,
         text: str,
         destination: MeshNode | MeshChannel | int | str = None,
@@ -1103,7 +1103,15 @@ class MeshInterface:
         want_ack: bool = False,
         channel_index: int | None = None,
         priority: MeshPacket.Priority | None = None,
+        packet_id: int | None = None,
+        reply_id: int | None = None,
     ) -> None:
+        """
+        Send a text message.
+
+        ``reply_id`` is the id of the packet it answers; ``packet_id`` lets the caller choose the id of the new
+        packet (see ``generate_packet_id``) to refer to it before it is acknowledged.
+        """
         if isinstance(destination, MeshNode):
             to_node = destination.id
             channel_index = None
@@ -1142,7 +1150,12 @@ class MeshInterface:
             priority=priority or (MeshPacket.Priority.RELIABLE if want_ack else MeshPacket.Priority.DEFAULT),
             want_response=False,
             ack=want_ack,
+            packet_id=packet_id,
+            reply_id=reply_id,
         )
+
+    def generate_packet_id(self) -> int:
+        return self._connection.generate_packet_id()
 
     async def _notify_node_update(self, node_id: int) -> None:
         node = self.find_node(node_id) or MeshNode.stub_node(node_id)

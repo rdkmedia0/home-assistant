@@ -79,6 +79,7 @@ CHAT_DEDUPLICATE_WINDOW = 25  # the gateway can report the same packet more than
 CHAT_HISTORY_PAGE_SIZE = 100
 CHAT_SENT_BY_MAX_LENGTH = 64  # label of who sent a message on behalf of someone else
 CHAT_HISTORY_PAGE_SIZE_MAX = 1000
+CHAT_REPLY_PREVIEW_CHARS = 80  # how much of the quoted message is kept with a reply
 
 CHAT_CHANNEL_COUNT = 8  # channel slots of a Meshtastic node
 CHAT_CHANNEL_NAME_MAX_BYTES = 11
