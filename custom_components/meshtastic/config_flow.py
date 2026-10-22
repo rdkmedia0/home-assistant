@@ -42,6 +42,8 @@ from .const import (
     CONF_OPTION_CHAT_ENABLE_DEFAULT,
     CONF_OPTION_CHAT_HISTORY_SIZE,
     CONF_OPTION_CHAT_HISTORY_SIZE_DEFAULT,
+    CONF_OPTION_CHAT_HISTORY_SIZE_MAX,
+    CONF_OPTION_CHAT_HISTORY_SIZE_MIN,
     CONF_OPTION_CHAT_PREFIX_SENDER,
     CONF_OPTION_CHAT_PREFIX_SENDER_DEFAULT,
     CONF_OPTION_CHAT_REQUIRE_ADMIN,
@@ -224,7 +226,10 @@ def _build_chat_schema(
             vol.Required(
                 CONF_OPTION_CHAT_HISTORY_SIZE,
                 default=options.get(CONF_OPTION_CHAT_HISTORY_SIZE, CONF_OPTION_CHAT_HISTORY_SIZE_DEFAULT),
-            ): vol.All(vol.Coerce(int), vol.Range(min=10, max=2000)),
+            ): vol.All(
+                vol.Coerce(int),
+                vol.Range(min=CONF_OPTION_CHAT_HISTORY_SIZE_MIN, max=CONF_OPTION_CHAT_HISTORY_SIZE_MAX),
+            ),
             vol.Required(
                 CONF_OPTION_CHAT_CHANNEL_MANAGEMENT,
                 default=options.get(CONF_OPTION_CHAT_CHANNEL_MANAGEMENT, CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_DEFAULT),

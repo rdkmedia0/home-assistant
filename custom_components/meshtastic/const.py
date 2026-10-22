@@ -68,6 +68,32 @@ CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_OFF = "off"
 CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_ADMIN = "admin"
 CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_ALL = "all"
 CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_DEFAULT = CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_OFF
+CONF_OPTION_CHAT_HISTORY_SIZE_MIN = 10
+CONF_OPTION_CHAT_HISTORY_SIZE_MAX = 2000
+
+CHAT_STORAGE_VERSION = 1
+CHAT_STORAGE_SAVE_DELAY = 10  # seconds the history is held back before it is written to disk
+CHAT_MAX_TEXT_BYTES = 200  # a Meshtastic text message, sender prefix included
+CHAT_ACK_TIMEOUT = 60  # seconds to wait for the mesh to acknowledge a message
+CHAT_DEDUPLICATE_WINDOW = 25  # the gateway can report the same packet more than once
+CHAT_HISTORY_PAGE_SIZE = 100
+CHAT_SENT_BY_MAX_LENGTH = 64  # label of who sent a message on behalf of someone else
+CHAT_HISTORY_PAGE_SIZE_MAX = 1000
+
+CHAT_CHANNEL_COUNT = 8  # channel slots of a Meshtastic node
+CHAT_CHANNEL_NAME_MAX_BYTES = 11
+CHAT_CHANNEL_NAME_INPUT_MAX_LENGTH = 64  # accepted from the websocket before the byte limit is checked
+CHAT_CHANNEL_ROLE_PRIMARY = "PRIMARY"
+CHAT_CHANNEL_ROLE_SECONDARY = "SECONDARY"
+CHAT_CHANNEL_ROLE_DISABLED = "DISABLED"
+CHAT_CHANNEL_KEY_KEEP = "keep"
+CHAT_CHANNEL_KEY_NONE = "none"
+CHAT_CHANNEL_KEY_DEFAULT = "default"
+CHAT_CHANNEL_KEY_RANDOM = "random"  # new 256 bit key
+CHAT_CHANNEL_KEY_RANDOM_128 = "random128"
+CHAT_CHANNEL_KEY_INPUT_MAX_LENGTH = 64  # a base64 encoded 32 byte key is 44 characters
+CHAT_CHANNEL_KEY_LENGTHS = (0, 1, 16, 32)  # bytes: none, a well known default key, AES-128, AES-256
+CHAT_POSITION_PRECISION_FULL = 32
 
 
 SERVICE_SEND_TEXT = "send_text"

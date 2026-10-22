@@ -33,7 +33,6 @@ from custom_components.meshtastic.api import (
 )
 from custom_components.meshtastic.chat import (
     DATA_CHAT,
-    MAX_TEXT_BYTES,
     MeshtasticChat,
     MessageStatus,
     async_setup_chat,
@@ -42,7 +41,7 @@ from custom_components.meshtastic.chat import (
     precision_to_meters,
     short_user_name,
 )
-from custom_components.meshtastic.const import DOMAIN
+from custom_components.meshtastic.const import CHAT_CHANNEL_NAME_MAX_BYTES, CHAT_MAX_TEXT_BYTES, DOMAIN
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -382,7 +381,7 @@ async def test_send_prefix_and_limits(hass: HomeAssistant) -> None:
     assert events[-1].data["message"] == "Steve S.: on my way"
 
     with pytest.raises(vol.Invalid, match="longer than"):
-        await chat.async_send("channel:1", "x" * MAX_TEXT_BYTES, user)
+        await chat.async_send("channel:1", "x" * CHAT_MAX_TEXT_BYTES, user)
     with pytest.raises(vol.Invalid, match="empty"):
         await chat.async_send("channel:1", "   ")
     with pytest.raises(vol.Invalid, match="Invalid conversation"):
@@ -448,7 +447,8 @@ async def test_websocket_api(hass: HomeAssistant, hass_ws_client, chat_setup) ->
     ]
     assert [n["num"] for n in gateway["nodes"]] == [ANNA]
     assert gateway["nodes"][0]["favorite"] is True
-    assert gateway["max_bytes"] == MAX_TEXT_BYTES
+    assert gateway["max_bytes"] == CHAT_MAX_TEXT_BYTES
+    assert gateway["channel_name_max_bytes"] == CHAT_CHANNEL_NAME_MAX_BYTES
 
     _fire_text(hass, entry, channel=1, message_id=5, text="hello from anna")
     event = await ws.receive_json()

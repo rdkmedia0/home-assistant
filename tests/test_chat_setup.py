@@ -5,18 +5,22 @@
 from __future__ import annotations
 
 import asyncio
+import pathlib
+import re
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.meshtastic.chat import DATA_CHAT
-from custom_components.meshtastic.const import DOMAIN
+from custom_components.meshtastic.const import CHAT_SENT_BY_MAX_LENGTH, DOMAIN
 from custom_components.meshtastic.frontend import CHAT_PANEL_URL_PATH
+from custom_components.meshtastic.ha_frontend import locate_dir
 
 from .test_chat import ANNA, BROADCAST, GATEWAY, FakeClient
 
@@ -274,3 +278,29 @@ async def test_options_form_renders_through_http_api(hass: HomeAssistant, hass_c
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
+
+
+@pytest.mark.usefixtures("fake_api")
+async def test_send_text_action_limits_the_sent_by_label(hass: HomeAssistant) -> None:
+    entry = _entry({"chat": {"enable": True}})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(
+            DOMAIN, "send_text", {"text": "hello", "sent_by": "x" * (CHAT_SENT_BY_MAX_LENGTH + 1)}, blocking=True
+        )
+
+
+def test_panel_ships_the_style_sheets_it_loads() -> None:
+    frontend = pathlib.Path(locate_dir())
+    script = (frontend / "chat-panel.js").read_text(encoding="utf-8")
+    style_sheets = re.findall(r'loadStyleSheet\("([^"]+)"\)', script)
+    assert style_sheets
+    for name in style_sheets:
+        assert (frontend / name).is_file(), name
+    # styles live in the style sheets: the script only sets the values it computes (textarea height, tooltip place)
+    assert "cssText" not in script
+    assert "<style" not in script
+    assert re.findall(r"\.style\.(\w+)", script) == ["height", "height", "left", "top"]

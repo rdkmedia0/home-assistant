@@ -42,6 +42,7 @@ from .const import (
     ATTR_SERVICE_SEND_DIRECT_MESSAGE_DATA_MESSAGE,
     ATTR_SERVICE_SEND_TEXT_DATA_SENT_BY,
     ATTR_SERVICE_SEND_TEXT_DATA_TEXT,
+    CHAT_SENT_BY_MAX_LENGTH,
     DOMAIN,
     LOGGER,
     SERVICE_BROADCAST_CHANNEL_MESSAGE,
@@ -62,7 +63,7 @@ SERVICE_SEND_TEXT_SCHEMA = vol.Schema(
         vol.Optional(ATTR_SERVICE_DATA_FROM): cv.string,
         vol.Optional(ATTR_SERVICE_DATA_CHANNEL): cv.string,
         vol.Required(ATTR_SERVICE_DATA_ACK, default=False): cv.boolean,
-        vol.Optional(ATTR_SERVICE_SEND_TEXT_DATA_SENT_BY): cv.string,
+        vol.Optional(ATTR_SERVICE_SEND_TEXT_DATA_SENT_BY): vol.All(cv.string, vol.Length(max=CHAT_SENT_BY_MAX_LENGTH)),
     }
 )
 

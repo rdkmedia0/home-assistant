@@ -5,7 +5,21 @@
 // Mesh Chat panel: read and send Meshtastic channel and direct messages through a gateway.
 // Plain web component without external dependencies, styled with Home Assistant theme variables.
 
-const PANEL_BUILD = "v2.19"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
+// Home Assistant loads this file as a module with the cache buster of ha_frontend/version.py (?v=...). The styles
+// are separate files next to it, loaded once and shared by the panel and the markers on the map.
+const MODULE_URL = new URL(import.meta.url);
+const PANEL_BUILD = MODULE_URL.searchParams.get("v") || "dev"; // shown in the gateway details
+const loadStyleSheet = async (file) => {
+  const url = new URL(file, MODULE_URL);
+  url.search = MODULE_URL.search;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${file}: ${response.status}`);
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync(await response.text());
+  return sheet;
+};
+const PANEL_STYLES = loadStyleSheet("chat-panel.css");
+const MARKER_STYLES = loadStyleSheet("chat-map-marker.css");
 const STORAGE_KEY = "meshtastic-chat";
 const HISTORY_LIMIT = 200;
 const TARGET_REFRESH_MS = 120 * 1000;
@@ -43,7 +57,6 @@ const KEY_CHOICES = [
   ["custom", "Enter a key (base64)"],
 ];
 const PRECISION_BITS = [0, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32];
-const CHANNEL_NAME_MAX_BYTES = 11;
 // nodes without a device tracker are shown to ha-map as states under this prefix (they never reach Home Assistant)
 const MAP_ENTITY_PREFIX = "device_tracker.meshtastic_chat_node_";
 // "1.3 dB · −103 dBm · 1 hop" for a received message; empty when the gateway reported nothing
@@ -368,6 +381,8 @@ const qrSvg = (text, { module = 4, margin = 4 } = {}) => {
 const escapeHtml = (value) =>
   String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
+const errorText = (error) => (error && error.message) || String(error);
+
 const utf8Length = (text) => new TextEncoder().encode(text).length;
 
 const isSet = (value) => value !== undefined && value !== null && value !== "";
@@ -402,6 +417,8 @@ const formatDistance = (meters) => (meters < 1000 ? `${Math.round(meters)} m` : 
 
 const compassPoint = (degrees) => COMPASS[Math.round((((degrees % 360) + 360) % 360) / 22.5) % 16];
 
+const batteryText = (level) => (level > 100 ? "plugged in" : `${level} %`);
+
 const formatDuration = (seconds) => {
   if (!isSet(seconds)) return "";
   const s = Math.max(0, Math.floor(seconds));
@@ -415,7 +432,7 @@ const formatDuration = (seconds) => {
 
 // labels and units for the telemetry values a node can answer with
 const METRICS = {
-  batteryLevel: ["Battery", (v) => (v > 100 ? "plugged in" : `${v} %`)],
+  batteryLevel: ["Battery", batteryText],
   voltage: ["Voltage", (v) => `${formatNumber(v, 2)} V`],
   channelUtilization: ["Channel utilisation", (v) => `${formatNumber(v, 1)} %`],
   airUtilTx: ["Air utilisation (TX)", (v) => `${formatNumber(v, 1)} %`],
@@ -459,11 +476,27 @@ const saveState = (state) => {
   }
 };
 
+// avatars and map markers get one of 12 colours (hue-0 ... hue-11 in the style sheets), the same one for the same node
+const HUE_COUNT = 12;
 const avatarHue = (seed) => {
   let hash = 0;
   for (const c of String(seed)) hash = (hash * 31 + c.charCodeAt(0)) | 0;
-  return Math.abs(hash) % 360;
+  return Math.abs(hash) % HUE_COUNT;
 };
+
+// a node on the map: a round badge with the short name, drawn by Home Assistant's map element inside its own
+// shadow root, so it brings its own style sheet
+class MeshtasticChatMarker extends HTMLElement {
+  constructor() {
+    super();
+    const root = this.attachShadow({ mode: "open" });
+    root.innerHTML = "<slot></slot>";
+    MARKER_STYLES.then((sheet) => {
+      root.adoptedStyleSheets = [sheet];
+    }).catch((err) => window.console.warn(`[Mesh Chat] marker styles: ${errorText(err)}`));
+  }
+}
+customElements.define("meshtastic-chat-marker", MeshtasticChatMarker);
 
 class MeshtasticChatPanel extends HTMLElement {
   constructor() {
@@ -558,7 +591,11 @@ class MeshtasticChatPanel extends HTMLElement {
   // ---------- data ----------
 
   async _init() {
-    this._renderSkeleton();
+    const styles = await PANEL_STYLES.catch((err) => {
+      window.console.warn(`[Mesh Chat] styles: ${errorText(err)}`);
+      return null;
+    });
+    this._renderSkeleton(styles);
     this._initialized = true;
     await this._loadGateways();
     this._subscribe();
@@ -581,7 +618,7 @@ class MeshtasticChatPanel extends HTMLElement {
       this._gateways = await this._hass.callWS({ type: "meshtastic/chat/gateways" });
       this._loadError = null;
     } catch (err) {
-      this._loadError = err.message || String(err);
+      this._loadError = errorText(err);
       this._gateways = [];
     }
 
@@ -664,7 +701,7 @@ class MeshtasticChatPanel extends HTMLElement {
       this._messages.set(key, [...messages, ...existing]);
     } catch (err) {
       this._messages.set(key, this._messages.get(key) || []);
-      this._showError(err.message || String(err));
+      this._showError(errorText(err));
     }
   }
 
@@ -749,6 +786,10 @@ class MeshtasticChatPanel extends HTMLElement {
     return date.toLocaleDateString(this._language(), { weekday: "long", day: "numeric", month: "long" });
   }
 
+  _formatDateTimeAgo(ts) {
+    return `${this._formatDateTime(ts)} (${this._formatAgo(ts)} ago)`;
+  }
+
   _formatAgo(ts) {
     if (!ts) return "";
     const seconds = Math.max(0, Date.now() / 1000 - ts);
@@ -760,7 +801,7 @@ class MeshtasticChatPanel extends HTMLElement {
 
   _avatar(seed, label, extraClass = "") {
     const hue = avatarHue(seed);
-    return `<span class="avatar ${extraClass}" style="--avatar-hue:${hue}" aria-hidden="true">${escapeHtml(
+    return `<span class="avatar ${extraClass} hue-${hue}" aria-hidden="true">${escapeHtml(
       String(label || "?").slice(0, 4)
     )}</span>`;
   }
@@ -856,7 +897,7 @@ class MeshtasticChatPanel extends HTMLElement {
         this._autoGrow();
       }
     } catch (err) {
-      this._showError(err.message || String(err));
+      this._showError(errorText(err));
     } finally {
       this._sending = false;
       this._updateComposer();
@@ -876,7 +917,7 @@ class MeshtasticChatPanel extends HTMLElement {
     try {
       await this._hass.callWS({ type: "meshtastic/chat/clear", entry_id: gateway.entry_id, conversation: this._conversation });
     } catch (err) {
-      this._showError(err.message || String(err));
+      this._showError(errorText(err));
     }
   }
 
@@ -911,7 +952,7 @@ class MeshtasticChatPanel extends HTMLElement {
       if (details && details.data) details.data.favorite = current;
       this._renderList();
       this._renderDetails();
-      this._showError(`Could not ${favorite ? "add" : "remove"} the favourite: ${err.message || err}`);
+      this._showError(`Could not ${favorite ? "add" : "remove"} the favourite: ${errorText(err)}`);
     }
   }
 
@@ -965,7 +1006,7 @@ class MeshtasticChatPanel extends HTMLElement {
     try {
       view.data = await this._hass.callWS({ type: "meshtastic/chat/map", entry_id: gateway.entry_id });
     } catch (err) {
-      view.error = err.message || String(err);
+      view.error = errorText(err);
     }
     if (this._mapView === view) this._renderFullMap();
   }
@@ -996,15 +1037,18 @@ class MeshtasticChatPanel extends HTMLElement {
   }
 
   _fullMapLocations(view) {
-    const points = this._mapPoints(view.data ? view.data.nodes : []);
+    return this._mapLocations(this._mapPoints(view.data ? view.data.nodes : []), view.markers, view.focus);
+  }
+
+  // locations for Home Assistant's map element; markers are kept per node so they survive refreshes
+  _mapLocations(points, markers = new Map(), focus = null) {
     return points.map((p) => {
-      let element = view.markers.get(p.num);
+      let element = markers.get(p.num);
       if (!element) {
         element = this._mapMarkerElement(p);
-        view.markers.set(p.num, element);
+        markers.set(p.num, element);
       }
-      element.style.outline = p.num === view.focus ? "3px solid var(--primary-color)" : "";
-      element.style.zIndex = p.num === view.focus ? "1000" : "";
+      element.classList.toggle("focused", p.num === focus);
       return {
         id: `node-${p.num}`,
         location: [p.latitude, p.longitude],
@@ -1014,9 +1058,17 @@ class MeshtasticChatPanel extends HTMLElement {
         activatable: true,
         locationEditable: false,
         radiusEditable: false,
-        fit: view.focus === null,
+        fit: focus === null,
       };
     });
+  }
+
+  // a click on a node marker (the map fires it from inside its own shadow root)
+  _onMapLocationClicked(ev) {
+    const id = ev.detail && ev.detail.id;
+    if (typeof id !== "string" || !id.startsWith("node-")) return;
+    ev.stopPropagation();
+    this._openDetails("node", Number(id.slice(5)));
   }
 
   _renderFullMap() {
@@ -1039,9 +1091,9 @@ class MeshtasticChatPanel extends HTMLElement {
   }
 
   async _mountFullMap(canvas, view) {
-    const how = await this._loadMapElement(canvas);
+    const loaded = await this._loadMapElement(canvas);
     if (this._mapView !== view || !canvas.isConnected) return;
-    if (!how) {
+    if (!loaded) {
       canvas.innerHTML = `<p class="empty center">The map element could not be loaded in this frontend.</p>`;
       return;
     }
@@ -1055,11 +1107,9 @@ class MeshtasticChatPanel extends HTMLElement {
     map.editableLocations = this._fullMapLocations(view);
     map.autoFit = view.focus === null;
     map.themeMode = "auto";
-    map.style.cssText = "position:absolute;inset:0;height:100%;width:100%";
     if ("hass" in map) map.hass = this._hass;
     canvas.replaceChildren(map);
     view.element = map;
-    this._mapNote(`Home Assistant's map element (${how}), ${view.data.nodes.length} node markers`, this._fullMapEl);
     if (view.focus !== null) this._focusMapNode(view.focus);
   }
 
@@ -1122,8 +1172,8 @@ class MeshtasticChatPanel extends HTMLElement {
     const gateway = this._gateway();
     if (!details || !gateway || details.busy) return;
     const values = this._channelFormValues(form);
-    if (utf8Length(values.name) > CHANNEL_NAME_MAX_BYTES) {
-      this._showError(`Channel names are limited to ${CHANNEL_NAME_MAX_BYTES} bytes`);
+    if (utf8Length(values.name) > gateway.channel_name_max_bytes) {
+      this._showError(`Channel names are limited to ${gateway.channel_name_max_bytes} bytes`);
       return;
     }
     const creating = details.kind === "new-channel";
@@ -1203,7 +1253,7 @@ class MeshtasticChatPanel extends HTMLElement {
     } catch (err) {
       details.busy = null;
       if (this._details === details) this._renderDetails();
-      this._showError(err.message || String(err));
+      this._showError(errorText(err));
       return;
     }
     details.busy = null;
@@ -1259,7 +1309,7 @@ class MeshtasticChatPanel extends HTMLElement {
         details.data = await this._hass.callWS({ type: "meshtastic/chat/node", entry_id: gateway.entry_id, node_id: id });
       }
     } catch (err) {
-      details.error = err.message || String(err);
+      details.error = errorText(err);
     }
     details.loading = false;
     if (this._details === details) this._renderDetails();
@@ -1294,7 +1344,7 @@ class MeshtasticChatPanel extends HTMLElement {
       details.results[request] = { ok: true, ts: Date.now() / 1000, result: response.result, type: message.telemetry_type };
       if (response.node) details.data = response.node;
     } catch (err) {
-      details.results[request] = { ok: false, ts: Date.now() / 1000, error: err.message || String(err), type: message.telemetry_type };
+      details.results[request] = { ok: false, ts: Date.now() / 1000, error: errorText(err), type: message.telemetry_type };
     }
     details.busy = null;
     if (this._details === details) this._renderDetails();
@@ -1341,7 +1391,7 @@ class MeshtasticChatPanel extends HTMLElement {
     if (node.last_heard) rows.push(["Heard", `${this._formatAgo(node.last_heard)} ago${node.via_mqtt ? " via MQTT" : ""}`]);
     if (isSet(node.hops_away)) rows.push(["Hops", String(node.hops_away)]);
     if (isSet(node.snr)) rows.push(["SNR", `${formatNumber(node.snr, 1)} dB`]);
-    if (isSet(node.battery_level)) rows.push(["Battery", node.battery_level > 100 ? "plugged in" : `${node.battery_level} %`]);
+    if (isSet(node.battery_level)) rows.push(["Battery", batteryText(node.battery_level)]);
     const flags = [];
     if (node.favorite) flags.push("favourite");
     if (node.has_public_key) flags.push("public key");
@@ -1384,23 +1434,19 @@ class MeshtasticChatPanel extends HTMLElement {
   }
 
   // Home Assistant's map element (ha-map) is loaded on demand by its map card. Creating a map card loads it;
-  // afterwards the element is used directly: the node trackers as entities (drawn by Home Assistant) and every
-  // other node with a position as a location of our own. Recent frontends take those through the element's
-  // "editableLocations" property (it also fires a click event per location); older ones, which still take a
-  // "hass" property, get a copy of hass with a synthetic state per node instead. Without the helpers the pane
-  // keeps the buttons only.
+  // afterwards the element is used directly and draws a marker per node. Recent frontends take the markers through
+  // the element's "editableLocations" property (it also fires a click event per location); older ones, which still
+  // take a "hass" property, get a copy of hass with a synthetic state per node instead.
   _mapHass(hass) {
     if (!this._mapStates || !hass) return hass;
     return { ...hass, states: { ...hass.states, ...this._mapStates } };
   }
 
   _mapMarkerElement(point) {
-    const element = document.createElement("div");
+    const element = document.createElement("meshtastic-chat-marker");
     element.title = point.long_name;
     element.textContent = String(point.short_name || "?").slice(0, 4);
-    element.style.cssText = `width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font:600 11px/1 Roboto,sans-serif;color:#fff;background:hsl(${avatarHue(
-      point.num
-    )},45%,45%);border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);cursor:pointer;box-sizing:border-box`;
+    element.classList.add(`hue-${avatarHue(point.num)}`);
     return element;
   }
 
@@ -1408,47 +1454,43 @@ class MeshtasticChatPanel extends HTMLElement {
   // a hui-card (available on every page of recent frontends) creating a map card does. Resolves to true when the
   // element is defined.
   async _loadMapElement(container) {
-    if (customElements.get("ha-map")) return "already loaded";
+    if (customElements.get("ha-map")) return true;
     const config = { type: "map", geo_location_sources: ["meshtastic"] }; // a valid map card that shows nothing
     let probe = null;
-    let how = null;
     try {
       // the probe card is attached to the document: the frontend loads lazy cards (and with them ha-map) only
       // for connected elements
       if (customElements.get("hui-card")) {
-        how = "hui-card";
         probe = document.createElement("hui-card");
         probe.hass = this._hass;
         probe.config = config;
         if (typeof probe.load === "function") probe.load();
       } else if (typeof window.loadCardHelpers === "function") {
-        how = "card helpers";
         const helpers = await window.loadCardHelpers();
         probe = helpers.createCardElement(config);
         probe.hass = this._hass;
       } else {
         this._mapNote("no way to load the map element in this frontend");
-        return null;
+        return false;
       }
-      probe.style.cssText = "position:absolute;left:-9999px;top:0;width:200px;height:100px;visibility:hidden";
+      probe.classList.add("map-probe");
       container.appendChild(probe);
       await Promise.race([customElements.whenDefined("ha-map"), new Promise((resolve) => window.setTimeout(resolve, 10000))]);
     } catch (e) {
-      this._mapNote(`loading the map element through ${how} failed: ${e && e.message ? e.message : e}`);
+      this._mapNote(`loading the map element failed: ${errorText(e)}`);
     } finally {
       if (probe) probe.remove();
     }
     if (!customElements.get("ha-map")) {
-      this._mapNote(`the map element did not load within 10 s (through ${how})`);
-      return null;
+      this._mapNote("the map element did not load within 10 s");
+      return false;
     }
-    return how;
+    return true;
   }
 
-  // what the map did, shown under it and logged, so problems can be reported precisely
+  // Why the map is missing, shown under the details map and logged so problems can be reported precisely
   _mapNote(text, root = this._detailsEl) {
-    this._mapStatusText = text;
-    if (window.console && typeof window.console.info === "function") window.console.info(`[Mesh Chat] map: ${text}`);
+    window.console.warn(`[Mesh Chat] map: ${text}`);
     const status = root && root.querySelector(".map-status");
     if (status) {
       status.textContent = `Map (panel ${PANEL_BUILD}): ${text}`;
@@ -1456,108 +1498,75 @@ class MeshtasticChatPanel extends HTMLElement {
     }
   }
 
-  async _mountMap(container, entities, details, points = []) {
+  // states and entities for the older "hass" interface of the map element: one synthetic tracker per node
+  _syntheticMapStates(points) {
+    const states = {};
+    const entities = [];
+    const now = new Date().toISOString();
+    for (const p of points) {
+      const entityId = `${MAP_ENTITY_PREFIX}${p.num}`;
+      states[entityId] = {
+        entity_id: entityId,
+        state: String(p.short_name || "?").slice(0, 4),
+        last_changed: now,
+        last_updated: now,
+        context: { id: entityId, parent_id: null, user_id: null },
+        attributes: {
+          friendly_name: p.long_name,
+          latitude: p.latitude,
+          longitude: p.longitude,
+          source_type: "gps",
+          icon: "mdi:radio-tower",
+        },
+      };
+      entities.push({
+        entity_id: entityId,
+        name: p.long_name,
+        label_mode: "state",
+        color: `hsl(${avatarHue(p.num) * (360 / HUE_COUNT)}, 45%, 45%)`,
+      });
+    }
+    return { states, entities };
+  }
+
+  async _mountMap(container, points, details) {
     this._mapCard = null;
     this._mapStates = null;
-    if (!entities.length && !points.length) return;
+    if (!points.length) return;
     try {
-      const tall = container.classList.contains("tall");
-      let element = null;
-      let mode = null;
-      const how = await this._loadMapElement(container);
-      if (how) {
-        const map = document.createElement("ha-map");
-        if ("editableLocations" in map) {
-          mode = `Home Assistant's map element (${how}), ${points.length} node marker${points.length === 1 ? "" : "s"}`;
-          map.entities = [...entities];
-          map.editableLocations = points.map((p) => ({
-            id: `node-${p.num}`,
-            location: [p.latitude, p.longitude],
-            title: p.long_name,
-            element: this._mapMarkerElement(p),
-            elementSize: [36, 36],
-            activatable: true,
-            locationEditable: false,
-            radiusEditable: false,
-            fit: true,
-          }));
-          map.autoFit = true;
-          map.themeMode = "auto";
-          map.style.height = tall ? "300px" : "200px";
-          if ("hass" in map) map.hass = this._hass;
-          element = map;
-        } else if ("hass" in map) {
-          mode = `Home Assistant's map element, older interface (${how}), ${entities.length + points.length} markers`;
-          const states = {};
-          const mapEntities = [...entities];
-          const now = new Date().toISOString();
-          for (const p of points) {
-            const entityId = `${MAP_ENTITY_PREFIX}${p.num}`;
-            states[entityId] = {
-              entity_id: entityId,
-              state: String(p.short_name || "?").slice(0, 4),
-              last_changed: now,
-              last_updated: now,
-              context: { id: entityId, parent_id: null, user_id: null },
-              attributes: {
-                friendly_name: p.long_name,
-                latitude: p.latitude,
-                longitude: p.longitude,
-                source_type: "gps",
-                icon: "mdi:radio-tower",
-              },
-            };
-            mapEntities.push({
-              entity_id: entityId,
-              name: p.long_name,
-              label_mode: "state",
-              color: `hsl(${avatarHue(p.num)}, 45%, 45%)`,
-            });
-          }
-          this._mapStates = states;
-          map.entities = mapEntities;
-          map.autoFit = true;
-          map.themeMode = "auto";
-          map.style.height = tall ? "300px" : "200px";
-          map.hass = this._mapHass(this._hass);
-          element = map;
-        } else {
-          this._mapNote("the map element has neither editableLocations nor hass; nodes without a tracker cannot be drawn");
-        }
+      if (!(await this._loadMapElement(container))) return;
+      const map = document.createElement("ha-map");
+      if ("editableLocations" in map) {
+        map.entities = [];
+        map.editableLocations = this._mapLocations(points);
+        if ("hass" in map) map.hass = this._hass;
+      } else if ("hass" in map) {
+        const { states, entities } = this._syntheticMapStates(points);
+        this._mapStates = states;
+        map.entities = entities;
+        map.hass = this._mapHass(this._hass);
+      } else {
+        this._mapNote("the map element has neither editableLocations nor hass; nodes cannot be drawn");
+        return;
       }
-      if (!element && entities.length && typeof window.loadCardHelpers === "function") {
-        mode = `map card with the ${entities.length} tracker${entities.length === 1 ? "" : "s"} only`;
-        // ha-map could not be loaded directly: at least the trackers through the map card
-        const helpers = await window.loadCardHelpers();
-        element = helpers.createCardElement({
-          type: "map",
-          entities,
-          auto_fit: true,
-          default_zoom: 13,
-          aspect_ratio: tall ? "4:3" : "16:9",
-          theme_mode: "auto",
-        });
-        element.hass = this._hass;
-      }
-      if (!element) return;
+      map.autoFit = true;
+      map.themeMode = "auto";
       if (this._details !== details || !container.isConnected) {
         this._mapStates = null;
         return;
       }
-      container.replaceChildren(element);
-      container.classList.add("mounted");
-      this._mapCard = element;
-      if (mode) this._mapNote(mode);
+      container.replaceChildren(map);
+      this._mapCard = map;
     } catch (e) {
-      this._mapNote(`failed: ${e && e.message ? e.message : e}`);
+      this._mapNote(`failed: ${errorText(e)}`);
     }
   }
 
   // ---------- rendering ----------
 
-  _renderSkeleton() {
+  _renderSkeleton(styles) {
+    if (styles) this.shadowRoot.adoptedStyleSheets = [styles];
     this.shadowRoot.innerHTML = `
-      <style>${MeshtasticChatPanel.styles}</style>
       <div class="toolbar">
         <ha-menu-button></ha-menu-button>
         <div class="title">Mesh Chat</div>
@@ -1630,12 +1639,7 @@ class MeshtasticChatPanel extends HTMLElement {
       const { dataset } = action;
       if (dataset.action === "close-map") this._closeFullMap();
     });
-    this._fullMapEl.addEventListener("editable-location-clicked", (ev) => {
-      const id = ev.detail && ev.detail.id;
-      if (typeof id !== "string" || !id.startsWith("node-")) return;
-      ev.stopPropagation();
-      this._openDetails("node", Number(id.slice(5)));
-    });
+    this._fullMapEl.addEventListener("editable-location-clicked", (ev) => this._onMapLocationClicked(ev));
 
     this._gatewaySelect.addEventListener("change", () => {
       this._entryId = this._gatewaySelect.value;
@@ -1719,12 +1723,7 @@ class MeshtasticChatPanel extends HTMLElement {
       else if (dataset.action === "copy") this._copyText(dataset.text);
       else if (dataset.action === "disable-channel") this._disableChannel();
     });
-    this._detailsEl.addEventListener("editable-location-clicked", (ev) => {
-      const id = ev.detail && ev.detail.id;
-      if (typeof id !== "string" || !id.startsWith("node-")) return;
-      ev.stopPropagation();
-      this._openDetails("node", Number(id.slice(5)));
-    });
+    this._detailsEl.addEventListener("editable-location-clicked", (ev) => this._onMapLocationClicked(ev));
     this._detailsEl.addEventListener("hass-more-info", (ev) => {
       const entityId = ev.detail && ev.detail.entityId;
       if (!entityId || !entityId.startsWith(MAP_ENTITY_PREFIX)) return;
@@ -2148,9 +2147,7 @@ class MeshtasticChatPanel extends HTMLElement {
 
     const mapContainer = el.querySelector(".map");
     if (mapContainer) {
-      const entities = JSON.parse(mapContainer.dataset.entities || "[]");
-      const points = JSON.parse(mapContainer.dataset.points || "[]");
-      this._mountMap(mapContainer, entities, details, points);
+      this._mountMap(mapContainer, this._nodeMapPoints(details.data), details);
     } else {
       this._unmountMap();
     }
@@ -2185,7 +2182,7 @@ class MeshtasticChatPanel extends HTMLElement {
             "From this node",
             a.total ? `${a.total} stored (${a.direct} direct, ${a.channels} on channels)` : "none stored yet",
           ],
-          ["Last message", a.last_ts ? `${this._formatDateTime(a.last_ts)} (${this._formatAgo(a.last_ts)} ago)` : null],
+          ["Last message", a.last_ts ? this._formatDateTimeAgo(a.last_ts) : null],
         ])
       : "";
     const gatewaySection = g
@@ -2207,7 +2204,7 @@ class MeshtasticChatPanel extends HTMLElement {
       : "";
 
     const radio = node.is_gateway ? "" : this._section("Radio", [
-      ["Last heard", node.last_heard ? `${this._formatDateTime(node.last_heard)} (${this._formatAgo(node.last_heard)} ago)` : "never"],
+      ["Last heard", node.last_heard ? this._formatDateTimeAgo(node.last_heard) : "never"],
       ["Hops away", isSet(node.hops_away) ? String(node.hops_away) : null],
       ["SNR", isSet(node.snr) ? `${formatNumber(node.snr, 1)} dB` : null],
       ["RSSI", isSet(node.rssi) ? `${formatNumber(node.rssi, 0)} dBm` : null],
@@ -2216,7 +2213,7 @@ class MeshtasticChatPanel extends HTMLElement {
     ]);
 
     const metrics = this._section("Device", [
-      ["Battery", isSet(node.battery_level) ? (node.battery_level > 100 ? "plugged in" : `${node.battery_level} %`) : null],
+      ["Battery", isSet(node.battery_level) ? batteryText(node.battery_level) : null],
       ["Voltage", isSet(node.voltage) ? `${formatNumber(node.voltage, 2)} V` : null],
       ["Channel utilisation", isSet(node.channel_utilization) ? `${formatNumber(node.channel_utilization, 1)} %` : null],
       ["Air utilisation (TX)", isSet(node.air_util_tx) ? `${formatNumber(node.air_util_tx, 1)} %` : null],
@@ -2239,23 +2236,19 @@ class MeshtasticChatPanel extends HTMLElement {
           "Precision",
           p.accuracy === 0 ? "full" : isSet(p.accuracy) ? `about ${formatDistance(p.accuracy)}` : null,
         ],
-        ["Received", p.time ? `${this._formatDateTime(p.time)} (${this._formatAgo(p.time)} ago)` : null],
+        ["Received", p.time ? this._formatDateTimeAgo(p.time) : null],
         [
           "From the gateway",
           isSet(p.distance) && !node.is_gateway ? `${formatDistance(p.distance)} · ${p.bearing}° ${compassPoint(p.bearing)}` : null,
         ],
       ];
-      // the chat draws its own markers (short name, click opens the node) rather than the tracker entities
-      const unique = [];
-      const points = [{ num: node.num, short_name: node.short_name, long_name: node.long_name, latitude: p.latitude, longitude: p.longitude }];
-      if (node.gateway_position && !node.is_gateway) points.push(node.gateway_position);
-      const buttons = [];
-      buttons.push(`<button class="chip-button" data-action="open-map" data-node="${node.num}"><ha-icon icon="mdi:map"></ha-icon>Open the map</button>`);
       position = `
         ${this._section("Position", rows)}
-        <div class="map" data-entities="${escapeHtml(JSON.stringify(unique))}" data-points="${escapeHtml(JSON.stringify(points))}"></div>
+        <div class="map"></div>
         <p class="hint map-status" hidden></p>
-        <div class="actions">${buttons.join("")}</div>
+        <div class="actions">
+          <button class="chip-button" data-action="open-map" data-node="${node.num}"><ha-icon icon="mdi:map"></ha-icon>Open the map</button>
+        </div>
         ${
           node.device_tracker
             ? ""
@@ -2298,6 +2291,15 @@ class MeshtasticChatPanel extends HTMLElement {
       ${["telemetry", "position", "traceroute"].map((key) => this._requestResult(key, details.results[key], node)).join("")}`;
 
     return gauges + identity + gatewaySection + radio + messages + metrics + position + security + homeAssistant + actions;
+  }
+
+  // the markers of the details map: the node itself and, for other nodes, the gateway to show the distance
+  _nodeMapPoints(node) {
+    const p = node && node.position;
+    if (!p) return [];
+    const points = [{ num: node.num, short_name: node.short_name, long_name: node.long_name, latitude: p.latitude, longitude: p.longitude }];
+    if (node.gateway_position && !node.is_gateway) points.push(node.gateway_position);
+    return points;
   }
 
   // ring gauges with the gateway's key numbers; the colour follows the usual thresholds
@@ -2442,8 +2444,8 @@ class MeshtasticChatPanel extends HTMLElement {
       <form class="channel-form" data-index="${creating ? details.id : channel.index}">
         ${indexField}
         <label>Name
-          <input name="name" maxlength="${CHANNEL_NAME_MAX_BYTES}" value="${escapeHtml(creating ? "" : channel.settings_name || "")}" placeholder="${
-            creating ? "Up to 11 characters" : "Empty keeps the default name"
+          <input name="name" maxlength="${gateway.channel_name_max_bytes}" value="${escapeHtml(creating ? "" : channel.settings_name || "")}" placeholder="${
+            creating ? `Up to ${gateway.channel_name_max_bytes} characters` : "Empty keeps the default name"
           }" ${busy ? "disabled" : ""}>
         </label>
         ${keyField}
@@ -2538,7 +2540,7 @@ class MeshtasticChatPanel extends HTMLElement {
     const activity = this._section("Activity in Home Assistant", [
       ["Messages kept", a.messages ? `${a.messages} (${a.received} received, ${a.sent} sent)` : "none yet"],
       ["First message", a.first_ts ? this._formatDateTime(a.first_ts) : null],
-      ["Last message", a.last_ts ? `${this._formatDateTime(a.last_ts)} (${this._formatAgo(a.last_ts)} ago)` : null],
+      ["Last message", a.last_ts ? this._formatDateTimeAgo(a.last_ts) : null],
     ]);
     const nodes = (a.nodes || []).length
       ? `<h3>Nodes heard on this channel</h3>
@@ -2562,565 +2564,6 @@ class MeshtasticChatPanel extends HTMLElement {
     const management = manage ? this._channelForm(channel, details) + this._channelShare(channel) : "";
     return settings + management + mqtt + mqttHint + radio + activity + nodes;
   }
-
-  static get styles() {
-    return `
-      :host {
-        display: block;
-        /* the panel container has no explicit height, so size against the viewport */
-        height: 100vh;
-        height: 100dvh;
-        overflow: hidden;
-        background: var(--primary-background-color);
-        color: var(--primary-text-color);
-        font-family: var(--ha-font-family-body, Roboto, sans-serif);
-        --chat-radius: 16px;
-        --chat-sidebar-width: 320px;
-        --chat-details-width: 360px;
-      }
-      * { box-sizing: border-box; }
-      button { font: inherit; color: inherit; }
-
-      .toolbar {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        height: var(--header-height, 56px);
-        padding: 0 12px 0 4px;
-        background: var(--app-header-background-color, var(--primary-color));
-        color: var(--app-header-text-color, var(--text-primary-color, #fff));
-        border-bottom: var(--app-header-border-bottom, none);
-      }
-      .toolbar .title { flex: 1; font-size: 20px; margin-left: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .gateway-select {
-        max-width: 50%;
-        padding: 6px 8px;
-        border-radius: 8px;
-        border: 1px solid currentColor;
-        background: transparent;
-        color: inherit;
-      }
-      .gateway-select option { color: var(--primary-text-color); background: var(--card-background-color); }
-
-      .layout {
-        display: flex;
-        height: calc(100% - var(--header-height, 56px));
-        min-height: 0;
-        position: relative;
-        container-type: inline-size;
-      }
-
-      .sidebar {
-        width: var(--chat-sidebar-width);
-        flex-shrink: 0;
-        display: flex;
-        flex-direction: column;
-        border-right: 1px solid var(--divider-color);
-        background: var(--card-background-color);
-        min-height: 0;
-      }
-      .search {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin: 12px;
-        padding: 0 12px;
-        height: 40px;
-        border-radius: 20px;
-        background: var(--secondary-background-color);
-        color: var(--secondary-text-color);
-      }
-      .search input {
-        flex: 1;
-        min-width: 0;
-        border: none;
-        outline: none;
-        background: transparent;
-        color: var(--primary-text-color);
-        font: inherit;
-      }
-      .conversations { flex: 1; overflow-y: auto; padding-bottom: 12px; }
-      .conversations h2 {
-        margin: 16px 16px 4px;
-        font-size: 12px;
-        font-weight: 500;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--secondary-text-color);
-      }
-
-      .item {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        width: 100%;
-        padding: 8px 16px;
-        border: none;
-        background: none;
-        text-align: left;
-        cursor: pointer;
-        user-select: none;
-      }
-      .item:hover { background: var(--secondary-background-color); }
-      .item.selected { background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.12); }
-      .item:focus-visible { outline: 2px solid var(--primary-color); outline-offset: -2px; }
-      .item-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-      .item-title { display: flex; align-items: baseline; gap: 6px; }
-      .item-title .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .item-title .time { font-size: 12px; color: var(--secondary-text-color); flex-shrink: 0; }
-      .item-title .count {
-        margin-left: auto;
-        font-size: 11px;
-        line-height: 16px;
-        min-width: 16px;
-        padding: 0 5px;
-        border-radius: 8px;
-        text-align: center;
-        background: var(--secondary-background-color);
-        color: var(--secondary-text-color);
-        flex-shrink: 0;
-      }
-      .item-title .count + .time { margin-left: 0; }
-      .item-title .time:first-child, .item-title .name + .time, .item-title .badge + .time, .item-title .star + .time { margin-left: auto; }
-      .item.unread .name, .item.unread .preview { font-weight: 700; color: var(--primary-text-color); }
-      .preview { font-size: 13px; color: var(--secondary-text-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .badge {
-        font-size: 11px;
-        padding: 0 6px;
-        border-radius: 8px;
-        background: var(--secondary-background-color);
-        color: var(--secondary-text-color);
-        flex-shrink: 0;
-      }
-      .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--primary-color); flex-shrink: 0; }
-
-      .star {
-        flex-shrink: 0;
-        font-size: 16px;
-        line-height: 1;
-        color: var(--secondary-text-color);
-        opacity: 0;
-      }
-      .star.on { color: var(--warning-color, #ffa600); opacity: 1; }
-      .star[role=button] { cursor: pointer; border-radius: 50%; padding: 2px 4px; }
-      .star[role=button]:hover, .star[role=button]:focus-visible { opacity: 1; background: var(--secondary-background-color); outline: none; }
-      .item:hover .star, .item:focus-within .star, .star.large { opacity: 1; }
-      .star.large { font-size: 24px; padding: 6px 8px; }
-
-      .avatar {
-        width: 40px;
-        height: 40px;
-        border-radius: 50%;
-        flex-shrink: 0;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 12px;
-        font-weight: 600;
-        color: #fff;
-        background: hsl(var(--avatar-hue, 200), 45%, 45%);
-        overflow: hidden;
-        white-space: nowrap;
-      }
-      .avatar.channel { background: var(--primary-color); color: var(--text-primary-color, #fff); }
-      .avatar.channel.public { background: var(--warning-color, #ffa600); }
-      .avatar.spacer { visibility: hidden; height: 1px; }
-      .avatar ha-icon { --mdc-icon-size: 20px; }
-
-      .thread {
-        flex: 1;
-        min-width: 0;
-        display: flex;
-        flex-direction: column;
-        min-height: 0;
-      }
-      .thread-header {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 8px 16px;
-        min-height: 64px;
-        border-bottom: 1px solid var(--divider-color);
-        background: var(--card-background-color);
-      }
-      .thread-title {
-        flex: 1;
-        min-width: 0;
-        display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 2px;
-        padding: 4px 8px;
-        margin: 0 -8px;
-        border: none;
-        border-radius: 8px;
-        background: none;
-        text-align: left;
-        cursor: pointer;
-      }
-      .thread-title:hover { background: var(--secondary-background-color); }
-      .thread-title:focus-visible { outline: 2px solid var(--primary-color); }
-      .thread-title .name, .details-title .name { font-size: 16px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-      .thread-title .subtitle, .details-title .subtitle { font-size: 12px; color: var(--secondary-text-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-      .icon-button {
-        width: 40px;
-        height: 40px;
-        border: none;
-        border-radius: 50%;
-        background: none;
-        cursor: pointer;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        color: var(--secondary-text-color);
-        flex-shrink: 0;
-      }
-      .icon-button:hover { background: var(--secondary-background-color); }
-      .icon-button.active { color: var(--primary-color); }
-      .back { display: none; }
-
-      .messages { flex: 1; overflow-y: auto; padding: 8px 16px 16px; }
-      .day { display: flex; justify-content: center; margin: 16px 0 8px; }
-      .day span {
-        font-size: 12px;
-        padding: 2px 10px;
-        border-radius: 10px;
-        background: var(--secondary-background-color);
-        color: var(--secondary-text-color);
-      }
-      .row { display: flex; align-items: flex-end; gap: 8px; margin-top: 10px; }
-      .row.continued { margin-top: 2px; }
-      .row.out { justify-content: flex-end; }
-      .row .avatar { width: 32px; height: 32px; font-size: 10px; }
-      .bubble {
-        max-width: min(75%, 560px);
-        padding: 8px 12px 6px;
-        border-radius: var(--chat-radius);
-        background: var(--card-background-color);
-        box-shadow: var(--ha-card-box-shadow, 0 1px 2px rgba(0, 0, 0, 0.12));
-        border: 1px solid var(--divider-color);
-      }
-      .row.in .bubble { border-bottom-left-radius: 4px; }
-      .row.out .bubble {
-        background: var(--primary-color);
-        color: var(--text-primary-color, #fff);
-        border-color: transparent;
-        border-bottom-right-radius: 4px;
-      }
-      .bubble.failed { background: var(--error-color, #db4437) !important; }
-      .author { font-size: 12px; font-weight: 600; margin-bottom: 2px; color: var(--primary-color); }
-      .author span { font-weight: 400; color: var(--secondary-text-color); }
-      .text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.4; }
-      .footer {
-        display: flex;
-        align-items: center;
-        justify-content: flex-end;
-        gap: 4px;
-        margin-top: 2px;
-        font-size: 11px;
-        opacity: 0.75;
-      }
-      .footer .via { margin-right: auto; padding-right: 8px; }
-      .footer .signal { white-space: nowrap; }
-      .gauges { display: flex; justify-content: space-between; gap: 6px; margin: 16px 0 4px; }
-      .gauge { display: flex; flex-direction: column; align-items: center; position: relative; min-width: 0; flex: 1; }
-      .gauge svg { width: 52px; height: 52px; transform: rotate(-90deg); }
-      .gauge circle { fill: none; stroke-width: 5; }
-      .gauge .track { stroke: var(--divider-color); }
-      .gauge .value { stroke: var(--primary-color); stroke-linecap: round; }
-      .gauge.good .value { stroke: var(--success-color, #43a047); }
-      .gauge.warn .value { stroke: var(--warning-color, #ffa600); }
-      .gauge.bad .value { stroke: var(--error-color, #db4437); }
-      .gauge.neutral .value { stroke: var(--secondary-text-color); opacity: 0.5; }
-      .gauge-text { position: absolute; top: 17px; font-size: 12px; font-weight: 600; }
-      .gauge-label { margin-top: 4px; font-size: 11px; color: var(--secondary-text-color); white-space: nowrap; }
-      .footer .status { --mdc-icon-size: 14px; }
-      .older {
-        display: block;
-        margin: 8px auto;
-        padding: 6px 14px;
-        border-radius: 16px;
-        border: 1px solid var(--divider-color);
-        background: var(--card-background-color);
-        cursor: pointer;
-      }
-
-      .error {
-        margin: 0 16px 8px;
-        padding: 8px 12px;
-        border-radius: 8px;
-        background: var(--error-color, #db4437);
-        color: #fff;
-        font-size: 14px;
-      }
-
-      .composer {
-        display: flex;
-        align-items: flex-end;
-        gap: 8px;
-        padding: 8px 16px 12px;
-        border-top: 1px solid var(--divider-color);
-        background: var(--card-background-color);
-      }
-      .composer-field {
-        flex: 1;
-        min-width: 0;
-        display: flex;
-        align-items: flex-end;
-        border-radius: 20px;
-        background: var(--secondary-background-color);
-        padding: 8px 14px;
-      }
-      textarea {
-        flex: 1;
-        min-width: 0;
-        border: none;
-        outline: none;
-        resize: none;
-        background: transparent;
-        color: var(--primary-text-color);
-        font: inherit;
-        line-height: 1.4;
-        max-height: 160px;
-      }
-      .counter { font-size: 11px; color: var(--secondary-text-color); margin-left: 8px; flex-shrink: 0; }
-      .counter.over { color: var(--error-color, #db4437); font-weight: 600; }
-      .send {
-        width: 44px;
-        height: 44px;
-        border: none;
-        border-radius: 50%;
-        background: var(--primary-color);
-        color: var(--text-primary-color, #fff);
-        cursor: pointer;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        flex-shrink: 0;
-      }
-      .send:disabled { opacity: 0.4; cursor: default; }
-
-      /* details pane */
-      .details {
-        width: var(--chat-details-width);
-        flex-shrink: 0;
-        display: none;
-        flex-direction: column;
-        min-height: 0;
-        border-left: 1px solid var(--divider-color);
-        background: var(--card-background-color);
-      }
-      .layout.show-details .details { display: flex; }
-      .details-header {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 8px 16px 8px 8px;
-        min-height: 64px;
-        border-bottom: 1px solid var(--divider-color);
-      }
-      .details-title { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-      .details .error { margin: 8px 16px 0; }
-      .details-body { flex: 1; overflow-y: auto; padding: 0 16px 24px; }
-      .details h3 {
-        margin: 20px 0 6px;
-        font-size: 12px;
-        font-weight: 500;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--secondary-text-color);
-      }
-      .kv {
-        display: grid;
-        grid-template-columns: minmax(96px, 38%) 1fr;
-        gap: 4px 12px;
-        margin: 0;
-        font-size: 14px;
-      }
-      .kv dt { color: var(--secondary-text-color); }
-      .kv dd { margin: 0; overflow-wrap: anywhere; }
-      .hint { margin: 8px 0 0; font-size: 12px; color: var(--secondary-text-color); }
-      .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
-      .chip-button {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 6px 12px;
-        border-radius: 16px;
-        border: 1px solid var(--divider-color);
-        background: var(--card-background-color);
-        cursor: pointer;
-        font-size: 13px;
-      }
-      .chip-button ha-icon { --mdc-icon-size: 18px; }
-      .chip-button:hover { background: var(--secondary-background-color); }
-      .chip-button.primary { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: transparent; }
-      .chip-button.primary:hover { filter: brightness(1.1); }
-      .chip-button:disabled { opacity: 0.5; cursor: default; }
-      .chip-button:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
-      .select-field select {
-        padding: 6px 10px;
-        border-radius: 16px;
-        border: 1px solid var(--divider-color);
-        background: var(--card-background-color);
-        color: var(--primary-text-color);
-        font: inherit;
-        font-size: 13px;
-      }
-      .result {
-        margin-top: 8px;
-        padding: 8px 12px;
-        border-radius: 12px;
-        background: var(--secondary-background-color);
-        font-size: 13px;
-      }
-      .result.failed { border-left: 3px solid var(--error-color, #db4437); }
-      .result-title { font-weight: 600; margin-bottom: 4px; }
-      .result .kv { font-size: 13px; }
-      .route-label { margin: 6px 0 2px; color: var(--secondary-text-color); }
-      .route { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-      .route .hop { padding: 2px 8px; border-radius: 10px; background: var(--card-background-color); border: 1px solid var(--divider-color); }
-      .route .arrow { display: inline-flex; flex-direction: column; align-items: center; color: var(--secondary-text-color); line-height: 1; }
-      .route .arrow small { font-size: 10px; }
-      .map {
-        margin-top: 12px;
-        border-radius: 12px;
-        overflow: hidden;
-        display: block;
-        position: relative;
-        min-height: 0;
-      }
-      .map.mounted { display: block; }
-      .map > * { display: block; }
-      .node-list { display: flex; flex-direction: column; margin: 0 -16px; }
-      .node-row {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        width: 100%;
-        padding: 8px 16px;
-        border: none;
-        background: none;
-        text-align: left;
-        cursor: pointer;
-      }
-      .node-row:hover { background: var(--secondary-background-color); }
-      .node-row .avatar { width: 32px; height: 32px; font-size: 10px; }
-
-      .tooltip {
-        position: fixed;
-        z-index: 10;
-        max-width: 280px;
-        padding: 8px 12px;
-        border-radius: 8px;
-        background: var(--card-background-color);
-        color: var(--primary-text-color);
-        border: 1px solid var(--divider-color);
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-        font-size: 13px;
-        pointer-events: none;
-      }
-      .tooltip .name { font-weight: 600; }
-      .tooltip .sub { color: var(--secondary-text-color); font-size: 12px; margin-bottom: 4px; }
-      .tooltip dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0; }
-      .tooltip dt { color: var(--secondary-text-color); }
-      .tooltip dd { margin: 0; }
-      .tooltip .hint { margin-top: 6px; font-size: 11px; }
-
-      .empty { padding: 8px 16px; margin: 0; color: var(--secondary-text-color); font-size: 14px; }
-      .empty.center { text-align: center; padding: 48px 16px; }
-      .empty.warning { color: var(--warning-color, #ffa600); }
-      .details .empty { padding: 24px 0; }
-
-      .conversations h2 { display: flex; align-items: center; gap: 4px; }
-      .gateway-row { border-bottom: 1px solid var(--divider-color); margin-bottom: 4px; }
-      .gateway-row ha-icon { color: var(--secondary-text-color); --mdc-icon-size: 20px; }
-      .toolbar .toolbar-button { color: inherit; }
-      .toolbar .toolbar-button:hover { background: rgba(255, 255, 255, 0.15); }
-      button.author { border: none; background: none; padding: 0; cursor: pointer; text-align: left; }
-      button.author:hover .text, button.author:hover { text-decoration: underline; }
-      button.author:focus-visible { outline: 2px solid var(--primary-color); border-radius: 4px; }
-      .h2-action {
-        width: 24px;
-        height: 24px;
-        margin-left: auto;
-        border: none;
-        border-radius: 50%;
-        background: none;
-        color: var(--primary-color);
-        cursor: pointer;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        --mdc-icon-size: 18px;
-      }
-      .h2-action:hover { background: var(--secondary-background-color); }
-      .channel-form { display: flex; flex-direction: column; gap: 10px; }
-      .channel-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--secondary-text-color); }
-      .channel-form label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--primary-text-color); font-size: 14px; }
-      .channel-form input[type=text], .channel-form input:not([type]), .channel-form select {
-        padding: 8px 10px;
-        border-radius: 8px;
-        border: 1px solid var(--divider-color);
-        background: var(--card-background-color);
-        color: var(--primary-text-color);
-        font: inherit;
-        font-size: 14px;
-        min-width: 0;
-      }
-      .channel-form input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--primary-color); }
-      .channel-form .actions { margin-top: 4px; }
-      .chip-button.danger { color: var(--error-color, #db4437); }
-      a.chip-button { text-decoration: none; color: inherit; }
-      .qr { width: 180px; max-width: 100%; margin: 8px auto; padding: 8px; background: #fff; border-radius: 8px; }
-      .qr svg { display: block; width: 100%; height: auto; }
-
-      .fullmap { flex: 1; min-width: 0; position: relative; display: none; background: var(--secondary-background-color); }
-      .layout.show-map .fullmap { display: block; }
-      .layout.show-map .thread { display: none; }
-      .fullmap-canvas { position: absolute; inset: 0; z-index: 0; }
-      .fullmap-canvas ha-map { display: block; }
-      .map-close {
-        position: absolute;
-        top: 12px;
-        right: 12px;
-        z-index: 1;
-        background: var(--card-background-color);
-        color: var(--primary-text-color);
-        box-shadow: var(--ha-card-box-shadow, 0 2px 8px rgba(0, 0, 0, 0.3));
-      }
-      .map-close:hover { background: var(--secondary-background-color); }
-      .fullmap-canvas .empty.center { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
-      .layout.narrow .fullmap { display: none; }
-      .layout.narrow.show-map .sidebar { display: none; }
-      .layout.narrow.show-map .fullmap { display: block; }
-      .layout.narrow.show-map.show-details .fullmap { display: none; }
-
-      /* medium widths: the details pane floats over the conversation instead of squeezing it */
-      @container (max-width: 1000px) {
-        .layout:not(.narrow) .details {
-          position: absolute;
-          top: 0;
-          right: 0;
-          bottom: 0;
-          box-shadow: -4px 0 16px rgba(0, 0, 0, 0.2);
-        }
-      }
-
-      /* narrow: one pane at a time */
-      .layout.narrow .sidebar { width: 100%; border-right: none; }
-      .layout.narrow .thread, .layout.narrow .details { display: none; }
-      .layout.narrow.show-thread .sidebar { display: none; }
-      .layout.narrow.show-thread .thread { display: flex; }
-      .layout.narrow.show-details .sidebar, .layout.narrow.show-details .thread { display: none; }
-      .layout.narrow.show-details .details { display: flex; width: 100%; border-left: none; }
-      .layout.narrow .back { display: inline-flex; }
-      .layout.narrow .bubble { max-width: 85%; }
-      /* the map replaces the conversation on phones too; the ordinary narrow rules above would show the thread */
-      .layout.narrow.show-map .thread, .layout.narrow.show-map.show-thread .thread { display: none; }
-    `;
-  }
 }
 
-if (window.console && typeof window.console.info === "function") window.console.info(`[Mesh Chat] panel build ${PANEL_BUILD}`);
 customElements.define("meshtastic-chat-panel", MeshtasticChatPanel);
