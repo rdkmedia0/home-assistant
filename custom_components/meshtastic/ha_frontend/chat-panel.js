@@ -5,7 +5,7 @@
 // Mesh Chat panel: read and send Meshtastic channel and direct messages through a gateway.
 // Plain web component without external dependencies, styled with Home Assistant theme variables.
 
-const PANEL_BUILD = "v2.16"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
+const PANEL_BUILD = "v2.17"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
 const STORAGE_KEY = "meshtastic-chat";
 const HISTORY_LIMIT = 200;
 const TARGET_REFRESH_MS = 120 * 1000;
@@ -1869,6 +1869,10 @@ class MeshtasticChatPanel extends HTMLElement {
       ? `${summary.direction === "out" ? "You: " : ""}${summary.text}`
       : meta;
     const time = summary ? this._formatAgo(summary.ts) : "";
+    const count = summary && summary.count ? summary.count : 0;
+    const countPill = count
+      ? `<span class="count" title="${count} message${count === 1 ? "" : "s"} stored">${count > 999 ? "999+" : count}</span>`
+      : "";
     const selected = conversation === this._conversation;
     return `
       <div class="item ${selected ? "selected" : ""} ${unread ? "unread" : ""}" role="button" tabindex="0" data-conversation="${escapeHtml(
@@ -1880,6 +1884,7 @@ class MeshtasticChatPanel extends HTMLElement {
             <span class="name">${escapeHtml(title)}</span>
             ${badge ? `<span class="badge">${escapeHtml(badge)}</span>` : ""}
             ${trailing}
+            ${countPill}
             <span class="time">${escapeHtml(time)}</span>
           </span>
           <span class="preview">${escapeHtml(preview)}</span>
@@ -2629,7 +2634,21 @@ class MeshtasticChatPanel extends HTMLElement {
       .item-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
       .item-title { display: flex; align-items: baseline; gap: 6px; }
       .item-title .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .item-title .time { margin-left: auto; font-size: 12px; color: var(--secondary-text-color); flex-shrink: 0; }
+      .item-title .time { font-size: 12px; color: var(--secondary-text-color); flex-shrink: 0; }
+      .item-title .count {
+        margin-left: auto;
+        font-size: 11px;
+        line-height: 16px;
+        min-width: 16px;
+        padding: 0 5px;
+        border-radius: 8px;
+        text-align: center;
+        background: var(--secondary-background-color);
+        color: var(--secondary-text-color);
+        flex-shrink: 0;
+      }
+      .item-title .count + .time { margin-left: 0; }
+      .item-title .time:first-child, .item-title .name + .time, .item-title .badge + .time, .item-title .star + .time { margin-left: auto; }
       .item.unread .name, .item.unread .preview { font-weight: 700; color: var(--primary-text-color); }
       .preview { font-size: 13px; color: var(--secondary-text-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .badge {
