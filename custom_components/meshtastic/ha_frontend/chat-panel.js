@@ -1226,30 +1226,52 @@ class MeshtasticChatPanel extends HTMLElement {
   // a hui-card (available on every page of recent frontends) creating a map card does. Resolves to true when the
   // element is defined.
   async _loadMapElement(container) {
-    if (customElements.get("ha-map")) return true;
+    if (customElements.get("ha-map")) return "already loaded";
     const config = { type: "map", geo_location_sources: ["meshtastic"] }; // a valid map card that shows nothing
     let probe = null;
+    let how = null;
     try {
-      if (typeof window.loadCardHelpers === "function") {
-        const helpers = await window.loadCardHelpers();
-        helpers.createCardElement(config);
-      } else if (customElements.get("hui-card")) {
+      // the probe card is attached to the document: the frontend loads lazy cards (and with them ha-map) only
+      // for connected elements
+      if (customElements.get("hui-card")) {
+        how = "hui-card";
         probe = document.createElement("hui-card");
         probe.hass = this._hass;
         probe.config = config;
         if (typeof probe.load === "function") probe.load();
-        probe.style.cssText = "position:absolute;left:-9999px;top:0;width:200px;height:100px;visibility:hidden";
-        container.appendChild(probe);
+      } else if (typeof window.loadCardHelpers === "function") {
+        how = "card helpers";
+        const helpers = await window.loadCardHelpers();
+        probe = helpers.createCardElement(config);
+        probe.hass = this._hass;
       } else {
-        return false;
+        this._mapNote("no way to load the map element in this frontend");
+        return null;
       }
-      await Promise.race([customElements.whenDefined("ha-map"), new Promise((resolve) => window.setTimeout(resolve, 8000))]);
+      probe.style.cssText = "position:absolute;left:-9999px;top:0;width:200px;height:100px;visibility:hidden";
+      container.appendChild(probe);
+      await Promise.race([customElements.whenDefined("ha-map"), new Promise((resolve) => window.setTimeout(resolve, 10000))]);
     } catch (e) {
-      // treated as unavailable below
+      this._mapNote(`loading the map element through ${how} failed: ${e && e.message ? e.message : e}`);
     } finally {
       if (probe) probe.remove();
     }
-    return !!customElements.get("ha-map");
+    if (!customElements.get("ha-map")) {
+      this._mapNote(`the map element did not load within 10 s (through ${how})`);
+      return null;
+    }
+    return how;
+  }
+
+  // what the map did, shown under it and logged, so problems can be reported precisely
+  _mapNote(text) {
+    this._mapStatusText = text;
+    if (window.console && typeof window.console.info === "function") window.console.info(`[Mesh Chat] map: ${text}`);
+    const status = this._detailsEl && this._detailsEl.querySelector(".map-status");
+    if (status) {
+      status.textContent = `Map: ${text}`;
+      status.hidden = false;
+    }
   }
 
   async _mountMap(container, entities, details, points = []) {
@@ -1259,9 +1281,14 @@ class MeshtasticChatPanel extends HTMLElement {
     try {
       const tall = container.classList.contains("tall");
       let element = null;
-      if (await this._loadMapElement(container)) {
+      let mode = null;
+      const how = await this._loadMapElement(container);
+      if (how) {
         const map = document.createElement("ha-map");
         if ("editableLocations" in map) {
+          mode = `Home Assistant's map element (${how}), ${entities.length} tracker${entities.length === 1 ? "" : "s"} and ${points.length} node marker${
+            points.length === 1 ? "" : "s"
+          }`;
           map.entities = [...entities];
           map.editableLocations = points.map((p) => ({
             id: `node-${p.num}`,
@@ -1280,6 +1307,7 @@ class MeshtasticChatPanel extends HTMLElement {
           if ("hass" in map) map.hass = this._hass;
           element = map;
         } else if ("hass" in map) {
+          mode = `Home Assistant's map element, older interface (${how}), ${entities.length + points.length} markers`;
           const states = {};
           const mapEntities = [...entities];
           const now = new Date().toISOString();
@@ -1313,9 +1341,12 @@ class MeshtasticChatPanel extends HTMLElement {
           map.style.height = tall ? "300px" : "200px";
           map.hass = this._mapHass(this._hass);
           element = map;
+        } else {
+          this._mapNote("the map element has neither editableLocations nor hass; nodes without a tracker cannot be drawn");
         }
       }
       if (!element && entities.length && typeof window.loadCardHelpers === "function") {
+        mode = `map card with the ${entities.length} tracker${entities.length === 1 ? "" : "s"} only`;
         // ha-map could not be loaded directly: at least the trackers through the map card
         const helpers = await window.loadCardHelpers();
         element = helpers.createCardElement({
@@ -1336,8 +1367,9 @@ class MeshtasticChatPanel extends HTMLElement {
       container.replaceChildren(element);
       container.classList.add("mounted");
       this._mapCard = element;
+      if (mode) this._mapNote(mode);
     } catch (e) {
-      // the map stays a link; nothing else depends on it
+      this._mapNote(`failed: ${e && e.message ? e.message : e}`);
     }
   }
 
@@ -1931,7 +1963,7 @@ class MeshtasticChatPanel extends HTMLElement {
     const points = data.nodes
       .filter((n) => !n.device_tracker)
       .map((n) => ({ num: n.num, short_name: n.short_name, long_name: n.long_name, latitude: n.position.latitude, longitude: n.position.longitude }));
-    const canEmbed = (typeof window.loadCardHelpers === "function" || !!customElements.get("hui-card") || !!customElements.get("ha-map")) && data.nodes.length > 0;
+    const canEmbed = (!!customElements.get("hui-card") || typeof window.loadCardHelpers === "function" || !!customElements.get("ha-map")) && data.nodes.length > 0;
     const missing = points.length;
     const rows = data.nodes
       .map((n) => {
@@ -1955,7 +1987,7 @@ class MeshtasticChatPanel extends HTMLElement {
       })
       .join("");
     return `
-      ${data.nodes.length ? `<div class="map tall" data-entities="${escapeHtml(JSON.stringify(entities))}" data-points="${escapeHtml(JSON.stringify(points))}"></div>` : ""}
+      ${data.nodes.length ? `<div class="map tall" data-entities="${escapeHtml(JSON.stringify(entities))}" data-points="${escapeHtml(JSON.stringify(points))}"></div><p class="hint map-status" hidden></p>` : ""}
       ${canEmbed ? "" : `<p class="hint">The map could not be embedded in this view.</p>`}
       <div class="actions"><button class="chip-button" data-action="navigate" data-href="/map"><ha-icon icon="mdi:map"></ha-icon>Open the Map panel</button></div>
       ${
@@ -2060,6 +2092,7 @@ class MeshtasticChatPanel extends HTMLElement {
       position = `
         ${this._section("Position", rows)}
         <div class="map" data-entities="${escapeHtml(JSON.stringify(unique))}" data-points="${escapeHtml(JSON.stringify(points))}"></div>
+        <p class="hint map-status" hidden></p>
         <div class="actions">${buttons.join("")}</div>
         ${
           node.device_tracker
