@@ -305,6 +305,8 @@ def test_panel_ships_the_style_sheets_it_loads() -> None:
     assert "cssText" not in script
     assert "<style" not in script
     assert re.findall(r"\.style\.(\w+)", script) == ["height", "height", "left", "top"]
+    # Home Assistant's frontend patches the form collections: iterating form.elements throws there
+    assert ".elements" not in script
 
 
 @pytest.mark.usefixtures("fake_api")

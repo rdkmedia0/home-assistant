@@ -1128,37 +1128,43 @@ class MeshtasticChatPanel extends HTMLElement {
   // ---------- channel management ----------
 
   // raw field values of a channel form, to survive a re-render of the pane
+  // The fields of a channel form are looked up with querySelector: Home Assistant's frontend patches the browser's
+  // form field collection and its methods throw "Method not implemented" there.
+  _formField(form, name) {
+    return form.querySelector(`[name="${name}"]`);
+  }
+
   _channelFormDraft(form) {
     const draft = { index: form.dataset.index, fields: {} };
-    for (const element of form.elements) {
-      if (!element.name) continue;
+    form.querySelectorAll("input[name], select[name]").forEach((element) => {
       draft.fields[element.name] = element.type === "checkbox" ? element.checked : element.value;
-    }
+    });
     return draft;
   }
 
   _restoreChannelFormDraft(form, draft) {
     for (const [name, value] of Object.entries(draft.fields)) {
-      const element = form.elements[name];
+      const element = this._formField(form, name);
       if (!element) continue;
       if (element.type === "checkbox") element.checked = value;
       else element.value = value;
     }
-    const custom = form.elements.custom_key;
-    if (custom && form.elements.key) custom.hidden = form.elements.key.value !== "custom";
+    const custom = this._formField(form, "custom_key");
+    const key = this._formField(form, "key");
+    if (custom && key) custom.hidden = key.value !== "custom";
   }
 
   _channelFormValues(form) {
     const values = {
       index: Number(form.dataset.index),
-      name: form.elements.name.value.trim(),
-      key: form.elements.key ? form.elements.key.value : "keep",
-      uplink_enabled: form.elements.uplink_enabled.checked,
-      downlink_enabled: form.elements.downlink_enabled.checked,
-      position_precision: Number(form.elements.position_precision.value),
+      name: this._formField(form, "name").value.trim(),
+      key: this._formField(form, "key") ? this._formField(form, "key").value : "keep",
+      uplink_enabled: this._formField(form, "uplink_enabled").checked,
+      downlink_enabled: this._formField(form, "downlink_enabled").checked,
+      position_precision: Number(this._formField(form, "position_precision").value),
     };
-    if (values.key === "custom") values.key = form.elements.custom_key.value.trim();
-    if (form.elements.index) values.index = Number(form.elements.index.value);
+    if (values.key === "custom") values.key = this._formField(form, "custom_key").value.trim();
+    if (this._formField(form, "index")) values.index = Number(this._formField(form, "index").value);
     return values;
   }
 
@@ -1746,7 +1752,7 @@ class MeshtasticChatPanel extends HTMLElement {
     this._detailsEl.addEventListener("change", (ev) => {
       if (ev.target.matches("select.telemetry-type")) this._telemetryType = ev.target.value;
       if (ev.target.matches("select[name=key]")) {
-        const custom = ev.target.form.elements.custom_key;
+        const custom = this._formField(ev.target.form, "custom_key");
         custom.hidden = ev.target.value !== "custom";
         if (!custom.hidden) custom.focus();
       }

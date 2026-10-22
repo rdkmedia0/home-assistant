@@ -2,4 +2,4 @@
 #
 # SPDX-License-Identifier: MIT
 
-VERSION = "26"
+VERSION = "27"
