@@ -411,13 +411,15 @@ Assistant log with the user's name.
 - **Your gateway**: the row above the channels is the connected node itself. It opens the same details pane with a
   *Gateway* section on top: Home Assistant entry, firmware, hardware, role, region, modem preset, hop limit, TX
   power, MQTT, and how many channels and nodes it has.
-- **Map of the mesh**: the map button in the toolbar opens a view with Home Assistant's map and every node that
-  reported a position, sorted by distance from the gateway, with the position age. Click a node to open its details.
+- **Map of the mesh**: the map button in the toolbar opens a view with Home Assistant's map showing every node
+  that reported a position to the gateway, and the same nodes as a list sorted by distance from the gateway with
+  the position age. Click a marker or a row to open the node's details.
 
-<p align="center"><img src="docs/mesh-chat/map.png" width="800" alt="Map view: the gateway row at the top of the list, the embedded map with the gateway and a node, and the list of nodes with a position"></p>
+<p align="center"><img src="docs/mesh-chat/map.png" width="800" alt="Map view: the gateway row at the top of the list, the embedded map with markers for all nodes, and the list of nodes with a position"></p>
 
-Only nodes with a `device_tracker` entity (the nodes selected in the integration options) are placed on the map;
-the others are still listed with their distance and bearing and marked *not on the map*.
+The map is Home Assistant's own map element. Nodes with a `device_tracker` entity (the nodes selected in the
+integration options, marked *tracker* in the list) are drawn by Home Assistant itself; all other nodes are added as
+markers from the gateway's node database, so they appear here but not in Home Assistant's Map panel or automations.
 
 ### Options
 
