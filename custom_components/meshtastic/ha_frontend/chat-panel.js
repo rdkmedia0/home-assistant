@@ -5,7 +5,7 @@
 // Mesh Chat panel: read and send Meshtastic channel and direct messages through a gateway.
 // Plain web component without external dependencies, styled with Home Assistant theme variables.
 
-const PANEL_BUILD = "v2.12"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
+const PANEL_BUILD = "v2.13"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
 const STORAGE_KEY = "meshtastic-chat";
 const HISTORY_LIMIT = 200;
 const TARGET_REFRESH_MS = 120 * 1000;
@@ -936,7 +936,7 @@ class MeshtasticChatPanel extends HTMLElement {
     if (!gateway) return;
     this._hideTooltip();
     if (this._narrow) this._closeDetails({ render: false });
-    const view = { entryId: gateway.entry_id, data: null, error: null, focus, filter: "", element: null, markers: new Map() };
+    const view = { entryId: gateway.entry_id, data: null, error: null, focus, element: null, markers: new Map() };
     this._mapView = view;
     this._applyLayout();
     this._renderFullMap();
@@ -968,7 +968,6 @@ class MeshtasticChatPanel extends HTMLElement {
       if (this._mapView !== view) return;
       view.data = data;
       if (view.element && "editableLocations" in view.element) view.element.editableLocations = this._fullMapLocations(view);
-      this._renderFullMapList();
     } catch (e) {
       // keep what is shown
     }
@@ -1009,64 +1008,12 @@ class MeshtasticChatPanel extends HTMLElement {
     }
     el.hidden = false;
     el.innerHTML = `
-      <div class="fullmap-canvas"></div>
-      <div class="map-overlay">
-        <div class="map-overlay-head">
-          <div class="search">
-            <ha-icon icon="mdi:magnify"></ha-icon>
-            <input type="search" placeholder="Find a node" aria-label="Find a node on the map" value="${escapeHtml(view.filter)}">
-          </div>
-          <button class="icon-button" data-action="fit-map" aria-label="Show all nodes" title="Show all nodes"><ha-icon icon="mdi:fit-to-screen-outline"></ha-icon></button>
-          <button class="icon-button" data-action="close-map" aria-label="Back to the chat" title="Back to the chat"><ha-icon icon="mdi:close"></ha-icon></button>
-        </div>
-        <div class="map-overlay-list node-list"></div>
-        <p class="hint map-status" hidden></p>
-      </div>`;
-    this._renderFullMapList();
+      <div class="fullmap-canvas">${view.data ? "" : `<p class="empty center">${escapeHtml(view.error || "Loading…")}</p>`}</div>
+      <button class="icon-button map-close" data-action="close-map" aria-label="Back to the chat" title="Back to the chat">
+        <ha-icon icon="mdi:close"></ha-icon>
+      </button>`;
     if (!view.data) return;
-    const canvas = el.querySelector(".fullmap-canvas");
-    this._mountFullMap(canvas, view);
-  }
-
-  _renderFullMapList() {
-    const view = this._mapView;
-    const list = this._fullMapEl && this._fullMapEl.querySelector(".map-overlay-list");
-    if (!view || !list) return;
-    if (view.error) {
-      list.innerHTML = `<p class="empty">${escapeHtml(view.error)}</p>`;
-      return;
-    }
-    if (!view.data) {
-      list.innerHTML = `<p class="empty">Loading…</p>`;
-      return;
-    }
-    const filter = view.filter;
-    const nodes = view.data.nodes.filter(
-      (n) => !filter || [n.long_name, n.short_name, n.user_id].some((v) => String(v || "").toLowerCase().includes(filter))
-    );
-    const rows = nodes
-      .map((n) => {
-        const p = n.position;
-        const parts = [];
-        if (n.is_gateway) parts.push("your gateway");
-        else if (isSet(p.distance)) parts.push(`${formatDistance(p.distance)} · ${p.bearing}° ${compassPoint(p.bearing)}`);
-        if (p.time) parts.push(`${this._formatAgo(p.time)} ago`);
-        return `
-          <button class="node-row ${n.num === view.focus ? "selected" : ""}" data-action="focus-node" data-node="${n.num}" title="Show on the map">
-            ${this._avatar(n.num, n.short_name)}
-            <span class="item-text">
-              <span class="item-title"><span class="name">${escapeHtml(n.long_name)}</span></span>
-              <span class="preview">${escapeHtml(parts.join(" · "))}</span>
-            </span>
-          </button>`;
-      })
-      .join("");
-    const count = view.data.nodes.length;
-    list.innerHTML = `
-      <div class="map-overlay-summary">${count} node${count === 1 ? "" : "s"} with a position · ${view.data.nodes_known} known${
-        filter ? ` · ${nodes.length} shown` : ""
-      }</div>
-      ${rows || `<p class="empty">No matching node</p>`}`;
+    this._mountFullMap(el.querySelector(".fullmap-canvas"), view);
   }
 
   async _mountFullMap(canvas, view) {
@@ -1091,10 +1038,10 @@ class MeshtasticChatPanel extends HTMLElement {
     canvas.replaceChildren(map);
     view.element = map;
     this._mapNote(`Home Assistant's map element (${how}), ${view.data.nodes.length} node markers`, this._fullMapEl);
-    if (view.focus !== null) this._focusMapNode(view.focus, { scroll: false });
+    if (view.focus !== null) this._focusMapNode(view.focus);
   }
 
-  _focusMapNode(num, { scroll = true } = {}) {
+  _focusMapNode(num) {
     const view = this._mapView;
     if (!view || !view.data) return;
     const node = view.data.nodes.find((n) => n.num === num);
@@ -1104,20 +1051,6 @@ class MeshtasticChatPanel extends HTMLElement {
       view.element.editableLocations = this._fullMapLocations(view);
       if (typeof view.element.setView === "function") view.element.setView([node.position.latitude, node.position.longitude], 15);
     }
-    this._renderFullMapList();
-    if (scroll) {
-      const row = this._fullMapEl.querySelector(`.node-row[data-node="${num}"]`);
-      if (row && typeof row.scrollIntoView === "function") row.scrollIntoView({ block: "nearest" });
-    }
-  }
-
-  _fitFullMap() {
-    const view = this._mapView;
-    if (!view || !view.element) return;
-    view.focus = null;
-    view.element.editableLocations = this._fullMapLocations(view);
-    if (typeof view.element.fitMap === "function") view.element.fitMap();
-    this._renderFullMapList();
   }
 
   // ---------- channel management ----------
@@ -1653,15 +1586,6 @@ class MeshtasticChatPanel extends HTMLElement {
       if (!action) return;
       const { dataset } = action;
       if (dataset.action === "close-map") this._closeFullMap();
-      else if (dataset.action === "fit-map") this._fitFullMap();
-      else if (dataset.action === "focus-node") this._focusMapNode(Number(dataset.node));
-      else if (dataset.action === "navigate") this._navigate(dataset.href);
-    });
-    this._fullMapEl.addEventListener("input", (ev) => {
-      if (ev.target.matches("input[type=search]") && this._mapView) {
-        this._mapView.filter = ev.target.value.trim().toLowerCase();
-        this._renderFullMapList();
-      }
     });
     this._fullMapEl.addEventListener("editable-location-clicked", (ev) => {
       const id = ev.detail && ev.detail.id;
@@ -3026,32 +2950,21 @@ class MeshtasticChatPanel extends HTMLElement {
       .layout.show-map .thread { display: none; }
       .fullmap-canvas { position: absolute; inset: 0; z-index: 0; }
       .fullmap-canvas ha-map { display: block; }
-      .map-overlay {
+      .map-close {
         position: absolute;
         top: 12px;
-        left: 12px;
+        right: 12px;
         z-index: 1;
-        width: 300px;
-        max-width: calc(100% - 24px);
-        max-height: calc(100% - 24px);
-        display: flex;
-        flex-direction: column;
-        border-radius: 12px;
         background: var(--card-background-color);
+        color: var(--primary-text-color);
         box-shadow: var(--ha-card-box-shadow, 0 2px 8px rgba(0, 0, 0, 0.3));
-        overflow: hidden;
       }
-      .map-overlay-head { display: flex; align-items: center; gap: 4px; padding: 4px 4px 4px 0; }
-      .map-overlay-head .search { flex: 1; min-width: 0; margin: 8px 0 8px 8px; height: 36px; }
-      .map-overlay-list { overflow-y: auto; min-height: 0; border-top: 1px solid var(--divider-color); }
-      .map-overlay-list .node-row.selected { background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.12); }
-      .map-overlay-summary { padding: 8px 16px 4px; font-size: 12px; color: var(--secondary-text-color); }
-      .map-overlay .map-status { margin: 0; padding: 6px 12px; border-top: 1px solid var(--divider-color); }
+      .map-close:hover { background: var(--secondary-background-color); }
+      .fullmap-canvas .empty.center { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
       .layout.narrow .fullmap { display: none; }
       .layout.narrow.show-map .sidebar { display: none; }
       .layout.narrow.show-map .fullmap { display: block; }
       .layout.narrow.show-map.show-details .fullmap { display: none; }
-      .layout.narrow .map-overlay { max-height: 45%; }
 
       /* medium widths: the details pane floats over the conversation instead of squeezing it */
       @container (max-width: 1000px) {
