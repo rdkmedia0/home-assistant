@@ -353,3 +353,21 @@ async def test_selected_node_has_its_tracker_in_the_details(hass: HomeAssistant)
     assert details["device_tracker"] is not None
     assert details["device_tracker"] in {e.entity_id for e in trackers}
     assert details["device_id"] is not None
+
+
+@pytest.mark.usefixtures("fake_api")
+async def test_node_added_in_the_options_gets_its_tracker(hass: HomeAssistant) -> None:
+    """Selecting a node under Configure creates its device and tracker right away, without a restart."""
+    entry = _entry({"chat": {"enable": True}})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    chat = hass.data[DATA_CHAT][entry.entry_id]
+    assert (await chat.async_node_details(ANNA))["device_tracker"] is None
+
+    hass.config_entries.async_update_entry(entry, options={**entry.options, "nodes": [{"id": ANNA, "name": "Anna"}]})
+    await hass.async_block_till_done()
+
+    chat = hass.data[DATA_CHAT][entry.entry_id]
+    details = await chat.async_node_details(ANNA)
+    assert details["device_tracker"] is not None
