@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -162,6 +163,7 @@ async def test_options_flow_enables_chat(hass: HomeAssistant) -> None:
         "prefix_sender": True,
         "history_size": 50,
         "channel_management": "off",
+        "track_all_nodes": False,
     }
     assert entry.entry_id in hass.data[DATA_CHAT]
     assert CHAT_PANEL_URL_PATH in hass.data["frontend_panels"]
@@ -263,6 +265,7 @@ async def test_options_form_renders_through_http_api(hass: HomeAssistant, hass_c
                 "prefix_sender": False,
                 "history_size": 200,
                 "channel_management": "admin",
+                "track_all_nodes": False,
             },
         },
     )
@@ -271,6 +274,43 @@ async def test_options_form_renders_through_http_api(hass: HomeAssistant, hass_c
     await hass.async_block_till_done()
     assert entry.options["chat"]["channel_management"] == "admin"
     assert hass.data[DATA_CHAT][entry.entry_id].channel_management == "admin"
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.usefixtures("fake_api")
+async def test_track_all_nodes_creates_trackers(hass: HomeAssistant) -> None:
+    """With the option on, every node with a position gets a device and a tracker; without, only selected nodes."""
+    entry = _entry({"chat": {"enable": True}})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    trackers = [s.entity_id for s in hass.states.async_all("device_tracker")]
+    assert [t for t in trackers if t.startswith("device_tracker.meshtastic")] == []
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    entry = _entry({"chat": {"enable": True, "track_all_nodes": True}})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    anna = hass.states.get(f"device_tracker.meshtastic_4904_{ANNA}_node_position")
+    assert anna is not None
+    assert anna.attributes["latitude"] == 47.01
+    assert anna.attributes["longitude"] == 8.0
+    gateway = hass.states.get(f"device_tracker.meshtastic_4904_{GATEWAY}_node_position")
+    assert gateway is not None
+
+    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, str(ANNA))})
+    assert device is not None
+    assert device.name == "Anna Hiking"
+    assert device.model_id == "T_ECHO"
+    # the chat links the tracker in the node details
+    details = await hass.data[DATA_CHAT][entry.entry_id].async_node_details(ANNA)
+    assert details["device_tracker"] == anna.entity_id
+    assert details["device_id"] == device.id
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()

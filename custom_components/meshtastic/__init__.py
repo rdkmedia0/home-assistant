@@ -51,7 +51,6 @@ from .const import (
     CONF_CONNECTION_TCP_HOST,
     CONF_CONNECTION_TCP_PORT,
     CONF_CONNECTION_TYPE,
-    CONF_OPTION_FILTER_NODES,
     CONF_OPTION_TCP_PROXY,
     CONF_OPTION_TCP_PROXY_ENABLE,
     CONF_OPTION_TCP_PROXY_ENABLE_DEFAULT,
@@ -72,7 +71,7 @@ from .entity import (
     GatewayEntity,
     MeshtasticEntity,
 )
-from .helpers import fetch_meshtastic_hardware_names
+from .helpers import fetch_meshtastic_hardware_names, is_tracked_node
 from .logbook import async_setup_message_logger
 from .meshtastic_tcp import async_setup_tcp_proxy, async_unload_tcp_proxy
 
@@ -217,11 +216,9 @@ async def _setup_meshtastic_devices(
     gateway_node = await client.async_get_own_node()
     nodes = await client.async_get_all_nodes()
     device_registry = dr.async_get(hass)
-    filter_nodes = entry.options.get(CONF_OPTION_FILTER_NODES, [])
-    filter_node_nums = [el["id"] for el in filter_nodes]
     device_hardware_names = await fetch_meshtastic_hardware_names(hass)
     for node_id, node in nodes.items():
-        if node_id in filter_node_nums:
+        if is_tracked_node(entry, node_id, node, include_positioned=True):
             await _setup_meshtastic_device(
                 client, device_hardware_names, device_registry, entry, gateway_node, node, node_id
             )

@@ -5,7 +5,7 @@
 // Mesh Chat panel: read and send Meshtastic channel and direct messages through a gateway.
 // Plain web component without external dependencies, styled with Home Assistant theme variables.
 
-const PANEL_BUILD = "v2.8"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
+const PANEL_BUILD = "v2.9"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
 const STORAGE_KEY = "meshtastic-chat";
 const HISTORY_LIMIT = 200;
 const TARGET_REFRESH_MS = 120 * 1000;
@@ -1997,7 +1997,7 @@ class MeshtasticChatPanel extends HTMLElement {
         missing
           ? `<p class="hint">Every node with a position is drawn from the gateway's node database; click a marker for its details. ${missing} of them ${
               missing === 1 ? "has" : "have"
-            } no device tracker (not selected in the integration options), so Home Assistant's own Map panel shows only the ${entities.length} marked "tracker".</p>`
+            } no device tracker, so Home Assistant's own Map panel shows only the ${entities.length} marked "tracker". Turn on "Track every node with a position" in the Mesh Chat options to give them trackers too.</p>`
           : ""
       }
       <h3>Nodes with a position</h3>

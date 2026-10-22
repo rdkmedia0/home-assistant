@@ -46,6 +46,8 @@ from .const import (
     CONF_OPTION_CHAT_PREFIX_SENDER_DEFAULT,
     CONF_OPTION_CHAT_REQUIRE_ADMIN,
     CONF_OPTION_CHAT_REQUIRE_ADMIN_DEFAULT,
+    CONF_OPTION_CHAT_TRACK_ALL_NODES,
+    CONF_OPTION_CHAT_TRACK_ALL_NODES_DEFAULT,
     CONF_OPTION_FILTER_NODES,
     CONF_OPTION_NODE,
     CONF_OPTION_NOTIFY_PLATFORM,
@@ -239,6 +241,10 @@ def _build_chat_schema(
                     mode=SelectSelectorMode.DROPDOWN,
                 )
             ),
+            vol.Required(
+                CONF_OPTION_CHAT_TRACK_ALL_NODES,
+                default=options.get(CONF_OPTION_CHAT_TRACK_ALL_NODES, CONF_OPTION_CHAT_TRACK_ALL_NODES_DEFAULT),
+            ): cv.boolean,
         }
     )
 

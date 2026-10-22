@@ -21,7 +21,8 @@ from .api import (
     EventMeshtasticApiTelemetryType,
     MeshtasticApiClientError,
 )
-from .const import CONF_OPTION_FILTER_NODES, DOMAIN, LOGGER
+from .const import DOMAIN, LOGGER
+from .helpers import is_tracked_node
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -186,12 +187,10 @@ class MeshtasticDataUpdateCoordinator(DataUpdateCoordinator):
         try:
             node_infos = await self.config_entry.runtime_data.client.async_get_all_nodes()
 
-            filter_nodes = self.config_entry.options.get(CONF_OPTION_FILTER_NODES, [])
-            filter_node_nums = [el["id"] for el in filter_nodes]
             return {
                 node_num: deepcopy(node_info)
                 for node_num, node_info in node_infos.items()
-                if node_num in filter_node_nums
+                if is_tracked_node(self.config_entry, node_num, node_info, include_positioned=True)
             }
         except MeshtasticApiClientError as exception:
             raise UpdateFailed(exception) from exception
