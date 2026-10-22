@@ -1145,18 +1145,17 @@ class MeshtasticChatPanel extends HTMLElement {
 
   // locations for Home Assistant's map element; markers are kept per node so they survive refreshes
   _mapLocations(points, markers = new Map(), focus = null) {
-    return points.map((p) => {
+    const locations = [];
+    for (const p of points) {
       let element = markers.get(p.num);
       if (!element) {
         element = this._mapMarkerElement(p);
         markers.set(p.num, element);
       }
       element.classList.toggle("focused", p.num === focus);
-      const radius = this._mapRadius(p);
-      return {
+      locations.push({
         id: `node-${p.num}`,
         location: [p.latitude, p.longitude],
-        ...(radius ? { radius } : {}),
         title: p.long_name,
         element,
         elementSize: [36, 36],
@@ -1164,8 +1163,32 @@ class MeshtasticChatPanel extends HTMLElement {
         locationEditable: false,
         radiusEditable: false,
         fit: focus === null,
-      };
-    });
+      });
+      // The accuracy circle is a location of its own that does not take part in fitting the map: the map fits the
+      // circles of the locations it fits, and one coarse circle (the gateway's, say) would zoom the whole map out
+      // until the circles of the other nodes are hidden behind their markers.
+      const radius = this._mapRadius(p);
+      if (radius) {
+        const key = `accuracy-${p.num}`;
+        let center = markers.get(key);
+        if (!center) {
+          center = document.createElement("span"); // the circle needs a centre element; there is nothing to show
+          markers.set(key, center);
+        }
+        locations.push({
+          id: key,
+          location: [p.latitude, p.longitude],
+          radius,
+          element: center,
+          elementSize: [0, 0],
+          activatable: false,
+          locationEditable: false,
+          radiusEditable: false,
+          fit: false,
+        });
+      }
+    }
+    return locations;
   }
 
   // meters around the marker where the node's real position can be; none for exact or very coarse positions
