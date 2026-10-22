@@ -413,11 +413,10 @@ Assistant log with the user's name.
   power, MQTT, and how many channels and nodes it has.
 - **Map of the mesh**: the map button in the toolbar replaces the conversation with a full-size map of every node
   that reported a position, drawn with Home Assistant's map engine but the chat's own markers (short name on a
-  coloured circle, full name on hover). The overlay lists the nodes sorted by distance from the gateway with a search
-  box; a row centres the map on that node, a marker opens its details, and the fit button shows the whole mesh
-  again. *Open the map* in a node's details opens this view centred on the node.
+  coloured circle, full name on hover). A marker opens the node's details; the close button returns to the chat.
+  *Open the map* in a node's details opens the same view centred on that node.
 
-<p align="center"><img src="docs/mesh-chat/map.png" width="800" alt="Map view: full-size map with the chat's own node markers and an overlay listing the nodes with a position"></p>
+<p align="center"><img src="docs/mesh-chat/map.png" width="800" alt="Map view: full-size map with the chat's own node markers"></p>
 
 Nodes with a `device_tracker` entity (the nodes selected in the integration options, marked *tracker* in the list)
 are the ones Home Assistant's own Map panel and automations know as well; the chat map does not need them.
