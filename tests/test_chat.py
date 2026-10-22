@@ -540,6 +540,13 @@ async def test_node_details(hass: HomeAssistant, chat_setup) -> None:
     assert details["device_id"] == device.id
     assert details["device_tracker"] == tracker.entity_id
     assert details["gateway_device_tracker"] is None
+    assert details["gateway_position"] == {
+        "num": GATEWAY,
+        "short_name": "4904",
+        "long_name": "Home Gateway",
+        "latitude": 47.0,
+        "longitude": 8.0,
+    }
     assert details["is_gateway"] is False
     position = details["position"]
     assert position["latitude"] == 47.01

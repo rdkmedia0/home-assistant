@@ -5,7 +5,7 @@
 // Mesh Chat panel: read and send Meshtastic channel and direct messages through a gateway.
 // Plain web component without external dependencies, styled with Home Assistant theme variables.
 
-const PANEL_BUILD = "v2.9"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
+const PANEL_BUILD = "v2.10"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
 const STORAGE_KEY = "meshtastic-chat";
 const HISTORY_LIMIT = 200;
 const TARGET_REFRESH_MS = 120 * 1000;
@@ -1289,9 +1289,7 @@ class MeshtasticChatPanel extends HTMLElement {
       if (how) {
         const map = document.createElement("ha-map");
         if ("editableLocations" in map) {
-          mode = `Home Assistant's map element (${how}), ${entities.length} tracker${entities.length === 1 ? "" : "s"} and ${points.length} node marker${
-            points.length === 1 ? "" : "s"
-          }`;
+          mode = `Home Assistant's map element (${how}), ${points.length} node marker${points.length === 1 ? "" : "s"}`;
           map.entities = [...entities];
           map.editableLocations = points.map((p) => ({
             id: `node-${p.num}`,
@@ -1962,12 +1960,17 @@ class MeshtasticChatPanel extends HTMLElement {
   }
 
   _mapBody(data) {
-    const entities = data.nodes.map((n) => n.device_tracker).filter(Boolean);
-    const points = data.nodes
-      .filter((n) => !n.device_tracker)
-      .map((n) => ({ num: n.num, short_name: n.short_name, long_name: n.long_name, latitude: n.position.latitude, longitude: n.position.longitude }));
+    // own markers for every node: short name on a coloured circle, click opens the node details
+    const entities = [];
+    const points = data.nodes.map((n) => ({
+      num: n.num,
+      short_name: n.short_name,
+      long_name: n.long_name,
+      latitude: n.position.latitude,
+      longitude: n.position.longitude,
+    }));
     const canEmbed = (!!customElements.get("hui-card") || typeof window.loadCardHelpers === "function" || !!customElements.get("ha-map")) && data.nodes.length > 0;
-    const missing = points.length;
+    const missing = data.nodes.filter((n) => !n.device_tracker).length;
     const rows = data.nodes
       .map((n) => {
         const p = n.position;
@@ -2082,10 +2085,10 @@ class MeshtasticChatPanel extends HTMLElement {
           isSet(p.distance) && !node.is_gateway ? `${formatDistance(p.distance)} · ${p.bearing}° ${compassPoint(p.bearing)}` : null,
         ],
       ];
-      const unique = [...new Set([node.device_tracker, node.gateway_device_tracker].filter(Boolean))];
-      const points = node.device_tracker
-        ? []
-        : [{ num: node.num, short_name: node.short_name, long_name: node.long_name, latitude: p.latitude, longitude: p.longitude }];
+      // the chat draws its own markers (short name, click opens the node) rather than the tracker entities
+      const unique = [];
+      const points = [{ num: node.num, short_name: node.short_name, long_name: node.long_name, latitude: p.latitude, longitude: p.longitude }];
+      if (node.gateway_position && !node.is_gateway) points.push(node.gateway_position);
       const buttons = [];
       if (node.device_tracker) {
         buttons.push(

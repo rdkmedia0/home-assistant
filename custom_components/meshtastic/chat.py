@@ -473,8 +473,19 @@ class MeshtasticChat:
         user = node.get("user", {})
         user_id = user.get("id") or f"!{node_id:08x}"
         metrics = node.get("deviceMetrics", {})
-        gateway_position = (nodes.get(self.gateway_id) or {}).get("position", {})
+        gateway_node = nodes.get(self.gateway_id) or {}
+        gateway_position = gateway_node.get("position", {})
         gateway_info = await self._gateway_info(len(nodes)) if node_id == self.gateway_id else None
+        gateway_marker = None
+        if gateway_position.get("latitude") is not None and gateway_position.get("longitude") is not None:
+            gateway_user = gateway_node.get("user", {})
+            gateway_marker = {
+                "num": self.gateway_id,
+                "short_name": gateway_user.get("shortName") or f"{self.gateway_id:08x}"[-4:],
+                "long_name": gateway_user.get("longName") or f"!{self.gateway_id:08x}",
+                "latitude": gateway_position["latitude"],
+                "longitude": gateway_position["longitude"],
+            }
         return {
             "num": node_id,
             "user_id": user_id,
@@ -501,6 +512,7 @@ class MeshtasticChat:
             "device_id": self._device_id(node_id),
             "device_tracker": self._device_tracker_entity_id(node_id),
             "gateway_device_tracker": self._device_tracker_entity_id(self.gateway_id) if self.gateway_id else None,
+            "gateway_position": gateway_marker,
             "is_gateway": node_id == self.gateway_id,
             "gateway_info": gateway_info,
             "conversation": node_conversation(node_id),
