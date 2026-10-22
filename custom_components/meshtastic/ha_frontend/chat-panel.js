@@ -5,7 +5,7 @@
 // Mesh Chat panel: read and send Meshtastic channel and direct messages through a gateway.
 // Plain web component without external dependencies, styled with Home Assistant theme variables.
 
-const PANEL_BUILD = "v2.14"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
+const PANEL_BUILD = "v2.15"; // shown in the gateway details and the map status; bump with ha_frontend/version.py
 const STORAGE_KEY = "meshtastic-chat";
 const HISTORY_LIMIT = 200;
 const TARGET_REFRESH_MS = 120 * 1000;
@@ -2451,8 +2451,9 @@ class MeshtasticChatPanel extends HTMLElement {
            .join("")}</div>`
       : "";
 
+    // editing and sharing come right after the settings; the activity list below can be long on a busy mesh
     const management = manage ? this._channelForm(channel, details) + this._channelShare(channel) : "";
-    return settings + mqtt + mqttHint + radio + activity + nodes + management;
+    return settings + management + mqtt + mqttHint + radio + activity + nodes;
   }
 
   static get styles() {

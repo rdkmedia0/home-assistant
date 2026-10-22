@@ -2,4 +2,4 @@
 #
 # SPDX-License-Identifier: MIT
 
-VERSION = "18"
+VERSION = "19"
