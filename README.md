@@ -344,6 +344,7 @@ and to every user once a gateway allows non-administrators (see the options belo
 | `?` on a sent message | no acknowledgement within a minute |
 | `!` on a sent message | failed, with the routing error as tooltip |
 | "… via Home Assistant" under a message | which Home Assistant user, automation or bridge sent it |
+| "6.3 dB · -92 dBm · 1 hop" under a received message | how the gateway heard it: signal to noise, signal strength, and how many relays it passed ("direct" when none) |
 | Byte counter next to the composer | Meshtastic text messages are limited to 200 bytes, prefix included |
 | Bin icon in the header | administrators can delete the stored history of a conversation; messages on devices are not affected |
 | Name or ⓘ in the header | opens the details of the node or channel (see below) |
@@ -356,9 +357,9 @@ Clicking the name in the conversation header opens the details pane; on phones i
 <p align="center"><img src="docs/mesh-chat/node-details.png" width="800" alt="Mesh Chat with the details of a node open on the right: position with distance and bearing, a map, security flags, the Home Assistant device and the request buttons"></p>
 
 For a **node** the pane shows the user ID, hardware and role, how it was last heard (time, hops, SNR, RSSI, via MQTT),
-the last device metrics the gateway received (battery, voltage, channel and air utilisation, uptime), the position with
-its precision and age, the favourite and public-key flags and, when the node has one, a button to its Home Assistant
-device. The **Ask the node** buttons send the integration's existing requests over the mesh – telemetry (device,
+how many of its messages are stored and when the last one arrived, the last device metrics the gateway received
+(battery, voltage, channel and air utilisation, uptime), the position with its precision and age, the favourite and
+public-key flags and, when the node has one, a button to its Home Assistant device. The **Ask the node** buttons send the integration's existing requests over the mesh – telemetry (device,
 environment, power or air quality metrics), position and traceroute – and show the reply, including the route with the
 SNR of every hop. Requests can take up to a minute.
 
@@ -406,9 +407,12 @@ Assistant log with the user's name.
 
 - **Direct message from a channel**: click the sender's name above a received message to open the direct messages
   with that node.
-- **Your gateway**: the row above the channels is the connected node itself. It opens the same details pane with a
-  *Gateway* section on top: Home Assistant entry, firmware, hardware, role, region, modem preset, hop limit, TX
-  power, MQTT, and how many channels and nodes it has.
+- **Your gateway**: the row above the channels is the connected node itself. It opens the same details pane with
+  gauges on top (channel utilisation, transmit air time, battery, nodes known, messages today) and a *Gateway*
+  section: Home Assistant entry, firmware, hardware, role, region, modem preset, hop limit, TX power, MQTT, and how
+  many channels and nodes it has.
+
+<p align="center"><img src="docs/mesh-chat/gateway.png" width="800" alt="The gateway's details with the gauges, and received messages with their signal under the text"></p>
 - **Map of the mesh**: the map button in the toolbar replaces the conversation with a full-size map of every node
   that reported a position, drawn with Home Assistant's map engine but the chat's own markers (short name on a
   coloured circle, full name on hover). A marker opens the node's details; the close button returns to the chat.
