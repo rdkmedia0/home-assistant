@@ -58,7 +58,8 @@
           "serial_port": "Path to serial port, e.g. /dev/ttyUSB0"
         }
       },
-      "reconfigure": {},
+      "reconfigure": {
+      },
       "node": {
         "description": "Configure which nodes should be imported",
         "data": {
