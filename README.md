@@ -28,6 +28,8 @@ Supported Features:
  * Device triggers & actions for automations
  * Various other service actions (e.g. request metrics, trace route)
  * Bundled meshtastic web client for manual interaction with gateway
+ * [Mesh Chat](#mesh-chat): a sidebar chat to read and send messages, with replies, emoji, node and channel details,
+   a map of the mesh and optional channel management
  * Mesh Chat sidebar panel to read and send channel and direct messages from Home Assistant
  * MQTT client proxy support (forwards messages from radio to MQTT broker)
 
@@ -385,7 +387,9 @@ how many of its messages are stored and when the last one arrived, the last devi
 (battery, voltage, channel and air utilisation, uptime), the position with its precision and age, the favourite and
 public-key flags and, when the node has one, a button to its Home Assistant device. The **Ask the node** buttons send the integration's existing requests over the mesh – telemetry (device,
 environment, power or air quality metrics), position and traceroute – and show the reply, including the route with the
-SNR of every hop. Requests can take up to a minute.
+SNR of every hop. Requests can take up to a minute. When a node does not answer, the reply says why: *Routing error:
+MAX_RETRANSMIT* means the gateway sent the request, retried the maximum number of times and heard nothing back (the
+node is probably out of range, offline or asleep), *No response received within 60 seconds* is the timeout.
 
 **Favourites** – the star next to a node (in the list and in the details pane) stores the favourite in the gateway's
 node database, exactly like the Meshtastic apps do, so the gateway's own screen and every client connected to it see it
@@ -467,7 +471,7 @@ History is kept in `.storage/meshtastic.chat.<entry id>` and removed when the ga
 ### Automations and other chats
 
 While Mesh Chat is enabled for a gateway, messages sent with the `meshtastic.send_text` action are kept in the chat
-history too and show their delivery state. The optional `sent_by` field labels them:
+history too and show their delivery state. The optional `sent_by` field (up to 64 characters) labels them:
 
 ```yaml
 action: meshtastic.send_text
