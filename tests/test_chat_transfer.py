@@ -139,7 +139,7 @@ def _entry(
         domain=DOMAIN,
         title=title,
         data={},
-        options={"chat": {"enable": True, "file_transfer": {"enable": True, **file_options}}},
+        options={"chat": {"enable": True, "files_enable": True, **file_options}},
     )
     entry.add_to_hass(hass)
     entry.runtime_data = SimpleNamespace(
@@ -287,7 +287,7 @@ async def test_dropped_chunk_and_lost_ack_are_repaired(hass: HomeAssistant, mesh
 
 
 async def test_window_of_four_resends_only_the_missing_chunk(hass: HomeAssistant, mesh: FakeMesh) -> None:
-    a, b = await _two_gateways(hass, mesh, window=4)
+    a, b = await _two_gateways(hass, mesh, files_window=4)
     mesh.drop_once.append(_is_data(5))
 
     message = await a.files.async_send(A_TO_B, NOTE, name="trail.gpx")
@@ -364,7 +364,7 @@ async def test_receiver_that_stops_answering(hass: HomeAssistant, mesh: FakeMesh
 
 
 async def test_receiver_asks_before_accepting(hass: HomeAssistant, mesh: FakeMesh) -> None:
-    a, b = await _two_gateways(hass, mesh, accept="ask")
+    a, b = await _two_gateways(hass, mesh, files_accept="ask")
     message = await a.files.async_send(A_TO_B, PHOTO, name="photo.jpg")
     await until(lambda: b.file_message(B_TO_A) is not None)
     offered = b.file_message(B_TO_A)
@@ -379,7 +379,7 @@ async def test_receiver_asks_before_accepting(hass: HomeAssistant, mesh: FakeMes
 
 
 async def test_receiver_declines(hass: HomeAssistant, mesh: FakeMesh) -> None:
-    a, b = await _two_gateways(hass, mesh, accept="ask")
+    a, b = await _two_gateways(hass, mesh, files_accept="ask")
     message = await a.files.async_send(A_TO_B, PHOTO, name="photo.jpg")
     await until(lambda: b.file_message(B_TO_A) is not None)
 
@@ -390,7 +390,7 @@ async def test_receiver_declines(hass: HomeAssistant, mesh: FakeMesh) -> None:
 
 
 async def test_receiver_rejects_what_it_cannot_take(hass: HomeAssistant, mesh: FakeMesh) -> None:
-    a, b = await _two_gateways(hass, mesh, max_file_kb=1)
+    a, b = await _two_gateways(hass, mesh, files_max_kb=1)
 
     message = await a.files.async_send(A_TO_B, PHOTO, name="photo.jpg")
     done = await _wait_status(a, A_TO_B, message["id"], FileStatus.REJECTED, FileStatus.FAILED)
@@ -518,7 +518,7 @@ async def test_files_are_served_and_removed_with_their_messages(
 
 
 async def test_websocket_file_commands(hass: HomeAssistant, mesh: FakeMesh, hass_ws_client) -> None:
-    a, b = await _two_gateways(hass, mesh, accept="ask")
+    a, b = await _two_gateways(hass, mesh, files_accept="ask")
     ws = await hass_ws_client(hass)
 
     await ws.send_json({"id": 1, "type": "meshtastic/chat/gateways"})
@@ -528,6 +528,11 @@ async def test_websocket_file_commands(hass: HomeAssistant, mesh: FakeMesh, hass
         "max_bytes": 32 * 1024,
         "ask": False,
         "window": 1,
+        "image_max_px": 320,
+        "chunk_bytes": 200,
+        "preset": "LONG_FAST",
+        "airtime": 2.2,
+        "overhead": 1.0,
         "url": f"/api/meshtastic/chat/files/{a.entry.entry_id}",
     }
     assert gateways[b.entry.entry_id]["files"]["ask"] is True

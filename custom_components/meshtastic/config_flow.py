@@ -40,6 +40,26 @@ from .const import (
     CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_OFF,
     CONF_OPTION_CHAT_ENABLE,
     CONF_OPTION_CHAT_ENABLE_DEFAULT,
+    CONF_OPTION_CHAT_FILES_ACCEPT,
+    CONF_OPTION_CHAT_FILES_ACCEPT_ASK,
+    CONF_OPTION_CHAT_FILES_ACCEPT_AUTO,
+    CONF_OPTION_CHAT_FILES_ACCEPT_DEFAULT,
+    CONF_OPTION_CHAT_FILES_ENABLE,
+    CONF_OPTION_CHAT_FILES_ENABLE_DEFAULT,
+    CONF_OPTION_CHAT_FILES_IMAGE_PX,
+    CONF_OPTION_CHAT_FILES_IMAGE_PX_CHOICES,
+    CONF_OPTION_CHAT_FILES_IMAGE_PX_DEFAULT,
+    CONF_OPTION_CHAT_FILES_MAX_KB,
+    CONF_OPTION_CHAT_FILES_MAX_KB_DEFAULT,
+    CONF_OPTION_CHAT_FILES_MAX_KB_MAX,
+    CONF_OPTION_CHAT_FILES_MAX_KB_MIN,
+    CONF_OPTION_CHAT_FILES_STORAGE_MB,
+    CONF_OPTION_CHAT_FILES_STORAGE_MB_DEFAULT,
+    CONF_OPTION_CHAT_FILES_STORAGE_MB_MAX,
+    CONF_OPTION_CHAT_FILES_STORAGE_MB_MIN,
+    CONF_OPTION_CHAT_FILES_WINDOW,
+    CONF_OPTION_CHAT_FILES_WINDOW_DEFAULT,
+    CONF_OPTION_CHAT_FILES_WINDOW_MAX,
     CONF_OPTION_CHAT_HISTORY_SIZE,
     CONF_OPTION_CHAT_HISTORY_SIZE_DEFAULT,
     CONF_OPTION_CHAT_HISTORY_SIZE_MAX,
@@ -255,6 +275,50 @@ def _build_chat_schema(
                     translation_key="chat_channel_management",
                     mode=SelectSelectorMode.DROPDOWN,
                 )
+            ),
+            vol.Required(
+                CONF_OPTION_CHAT_FILES_ENABLE,
+                default=options.get(CONF_OPTION_CHAT_FILES_ENABLE, CONF_OPTION_CHAT_FILES_ENABLE_DEFAULT),
+            ): cv.boolean,
+            vol.Required(
+                CONF_OPTION_CHAT_FILES_MAX_KB,
+                default=options.get(CONF_OPTION_CHAT_FILES_MAX_KB, CONF_OPTION_CHAT_FILES_MAX_KB_DEFAULT),
+            ): vol.All(
+                vol.Coerce(int),
+                vol.Range(min=CONF_OPTION_CHAT_FILES_MAX_KB_MIN, max=CONF_OPTION_CHAT_FILES_MAX_KB_MAX),
+            ),
+            vol.Required(
+                CONF_OPTION_CHAT_FILES_ACCEPT,
+                default=options.get(CONF_OPTION_CHAT_FILES_ACCEPT, CONF_OPTION_CHAT_FILES_ACCEPT_DEFAULT),
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=[CONF_OPTION_CHAT_FILES_ACCEPT_AUTO, CONF_OPTION_CHAT_FILES_ACCEPT_ASK],
+                    translation_key="chat_files_accept",
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Required(
+                CONF_OPTION_CHAT_FILES_IMAGE_PX,
+                default=str(options.get(CONF_OPTION_CHAT_FILES_IMAGE_PX, CONF_OPTION_CHAT_FILES_IMAGE_PX_DEFAULT)),
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        SelectOptionDict(value=str(px), label=f"{px} px")
+                        for px in CONF_OPTION_CHAT_FILES_IMAGE_PX_CHOICES
+                    ],
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Required(
+                CONF_OPTION_CHAT_FILES_WINDOW,
+                default=options.get(CONF_OPTION_CHAT_FILES_WINDOW, CONF_OPTION_CHAT_FILES_WINDOW_DEFAULT),
+            ): vol.All(vol.Coerce(int), vol.Range(min=1, max=CONF_OPTION_CHAT_FILES_WINDOW_MAX)),
+            vol.Required(
+                CONF_OPTION_CHAT_FILES_STORAGE_MB,
+                default=options.get(CONF_OPTION_CHAT_FILES_STORAGE_MB, CONF_OPTION_CHAT_FILES_STORAGE_MB_DEFAULT),
+            ): vol.All(
+                vol.Coerce(int),
+                vol.Range(min=CONF_OPTION_CHAT_FILES_STORAGE_MB_MIN, max=CONF_OPTION_CHAT_FILES_STORAGE_MB_MAX),
             ),
         }
     )

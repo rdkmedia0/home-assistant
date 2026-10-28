@@ -1176,7 +1176,7 @@ async def websocket_chat_gateways(
                 "can_clear": connection.user.is_admin,
                 "can_favorite": connection.user.is_admin,
                 "can_manage_channels": chat.can_manage_channels(connection.user),
-                "files": chat.files.info() if chat.files is not None else None,
+                "files": await chat.files.async_info() if chat.files is not None else None,
                 "conversations": chat.summaries(),
                 **targets,
             }

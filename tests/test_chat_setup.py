@@ -167,6 +167,12 @@ async def test_options_flow_enables_chat(hass: HomeAssistant) -> None:
         "prefix_sender": True,
         "history_size": 50,
         "channel_management": "off",
+        "files_enable": False,
+        "files_max_kb": 32,
+        "files_accept": "auto",
+        "files_image_px": "320",
+        "files_window": 1,
+        "files_storage_mb": 50,
     }
     assert entry.entry_id in hass.data[DATA_CHAT]
     assert CHAT_PANEL_URL_PATH in hass.data["frontend_panels"]

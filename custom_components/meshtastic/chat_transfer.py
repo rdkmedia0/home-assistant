@@ -60,12 +60,13 @@ from .const import (
     CHAT_FILES_URL,
     CHAT_STORAGE_SAVE_DELAY,
     CONF_OPTION_CHAT,
-    CONF_OPTION_CHAT_FILES,
     CONF_OPTION_CHAT_FILES_ACCEPT,
     CONF_OPTION_CHAT_FILES_ACCEPT_ASK,
     CONF_OPTION_CHAT_FILES_ACCEPT_DEFAULT,
     CONF_OPTION_CHAT_FILES_ENABLE,
     CONF_OPTION_CHAT_FILES_ENABLE_DEFAULT,
+    CONF_OPTION_CHAT_FILES_IMAGE_PX,
+    CONF_OPTION_CHAT_FILES_IMAGE_PX_DEFAULT,
     CONF_OPTION_CHAT_FILES_MAX_KB,
     CONF_OPTION_CHAT_FILES_MAX_KB_DEFAULT,
     CONF_OPTION_CHAT_FILES_STORAGE_MB,
@@ -175,7 +176,7 @@ class TransferError(Exception):
 
 
 def file_options(entry: ConfigEntry) -> dict[str, Any]:
-    return entry.options.get(CONF_OPTION_CHAT, {}).get(CONF_OPTION_CHAT_FILES, {})
+    return entry.options.get(CONF_OPTION_CHAT, {})
 
 
 def file_transfer_enabled(entry: ConfigEntry) -> bool:
@@ -300,13 +301,31 @@ class MeshtasticFileTransfers:
             ),
         )
 
-    def info(self) -> dict[str, Any]:
-        """Tell the chat panel what it needs to know."""
+    @property
+    def image_max_px(self) -> int:
+        return int(
+            file_options(self.entry).get(CONF_OPTION_CHAT_FILES_IMAGE_PX, CONF_OPTION_CHAT_FILES_IMAGE_PX_DEFAULT)
+        )
+
+    async def async_info(self) -> dict[str, Any]:
+        """Tell the chat panel what it needs to know, including how long a packet takes on this gateway's preset."""
+        preset = None
+        try:
+            preset = (
+                (await self.entry.runtime_data.client.async_get_node_local_config()).get("lora", {}).get("modemPreset")
+            )
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Could not read the LoRa config for the estimate", exc_info=True)
         return {
             "enabled": True,
             "max_bytes": self.max_file_bytes,
             "ask": self.ask_before_accepting,
             "window": self.window,
+            "image_max_px": self.image_max_px,
+            "chunk_bytes": chat_files.DEFAULT_CHUNK_BYTES,
+            "preset": preset,
+            "airtime": AIRTIME_PER_PACKET.get(preset or "", DEFAULT_AIRTIME),
+            "overhead": ROUND_TRIP_OVERHEAD,
             "url": f"{CHAT_FILES_URL}/{self.entry.entry_id}",
         }
 

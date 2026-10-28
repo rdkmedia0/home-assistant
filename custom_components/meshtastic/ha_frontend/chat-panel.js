@@ -31,7 +31,52 @@ const STATUS_ICONS = {
   delivered: { icon: "mdi:check-all", label: "Delivered – acknowledged by the recipient" },
   no_ack: { icon: "mdi:help-circle-outline", label: "Sent – no acknowledgement received" },
   failed: { icon: "mdi:alert-circle-outline", label: "Failed" },
+  // file transfers
+  offering: { icon: "mdi:clock-outline", label: "Waiting for the other side to accept" },
+  offered: { icon: "mdi:help-circle-outline", label: "Waiting for you to accept" },
+  receiving: { icon: "mdi:download", label: "Receiving" },
+  received: { icon: "mdi:check-all", label: "Received" },
+  cancelled: { icon: "mdi:cancel", label: "Cancelled" },
+  rejected: { icon: "mdi:file-remove-outline", label: "Rejected" },
 };
+// what a file message is doing, for the line under the progress bar
+const FILE_ACTIVE = new Set(["offering", "offered", "sending", "receiving"]);
+const FILE_LABELS = {
+  offering: "Waiting for the other side to accept…",
+  offered: "Incoming file – accept it to start the transfer",
+  sending: "Sending",
+  receiving: "Receiving",
+  delivered: "Delivered",
+  received: "Received",
+  failed: "Failed",
+  cancelled: "Cancelled",
+  rejected: "Rejected",
+};
+const formatBytes = (bytes) => {
+  if (bytes === null || bytes === undefined) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} kB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+const formatTransferTime = (seconds) => {
+  if (seconds < 90) return `${Math.max(1, Math.round(seconds))} s`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)} min`;
+  return `${(seconds / 3600).toFixed(1)} h`;
+};
+// how long a file takes on the gateway's preset: one chunk per round trip, each hop repeats the chunk on air
+const transferEstimate = (files, bytes, hops) => {
+  const chunks = Math.max(1, Math.ceil(bytes / (files.chunk_bytes || 200)));
+  const seconds = chunks * ((files.airtime || 2.2) * (1 + (hops || 0)) + (files.overhead || 1));
+  return { chunks, seconds };
+};
+const presetName = (preset) =>
+  preset
+    ? preset
+        .toLowerCase()
+        .split("_")
+        .map((p) => p[0].toUpperCase() + p.slice(1))
+        .join("")
+    : "the current preset";
 
 const TELEMETRY_TYPES = [
   ["device_metrics", "Device metrics"],
@@ -932,6 +977,210 @@ class MeshtasticChatPanel extends HTMLElement {
     }
   }
 
+  // ---------- files ----------
+
+  async _prepareAttachment(file) {
+    const gateway = this._gateway();
+    const info = gateway && this._conversationInfo(gateway, this._conversation);
+    if (!gateway || !gateway.files || !info || info.kind !== "node") return;
+    const files = gateway.files;
+    let bytes;
+    let mime = file.type || "";
+    let name = file.name || "file";
+    let preview = null;
+    try {
+      if (mime.startsWith("image/")) {
+        const reduced = await this._reduceImage(file, files.image_max_px || 320);
+        bytes = reduced.bytes;
+        mime = reduced.mime;
+        preview = reduced.url;
+        if (!/\.jpe?g$/i.test(name)) name = `${name.replace(/\.[^.]+$/, "")}.jpg`;
+      } else {
+        bytes = new Uint8Array(await file.arrayBuffer());
+      }
+    } catch (err) {
+      this._showError(`Could not read the file: ${errorText(err)}`);
+      return;
+    }
+    if (bytes.length > files.max_bytes) {
+      this._showError(`The file is ${formatBytes(bytes.length)}; this gateway sends files up to ${formatBytes(files.max_bytes)}.`);
+      return;
+    }
+    if (!bytes.length) {
+      this._showError("The file is empty.");
+      return;
+    }
+    this._attachment = { entryId: gateway.entry_id, conversation: this._conversation, name, mime, bytes, preview, hops: info.hops_away || 0 };
+    this._renderAttachment();
+    this._updateComposer();
+  }
+
+  // draw the photo smaller onto a canvas and re-encode it as JPEG: a phone photo becomes a few kB
+  async _reduceImage(file, maxPx) {
+    const url = URL.createObjectURL(file);
+    try {
+      const image = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("not an image the browser can decode"));
+        img.src = url;
+      });
+      const scale = Math.min(1, maxPx / Math.max(image.naturalWidth, image.naturalHeight));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.7));
+      if (!blob) throw new Error("the image could not be encoded");
+      return { bytes: new Uint8Array(await blob.arrayBuffer()), mime: "image/jpeg", url: canvas.toDataURL("image/jpeg", 0.7) };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  _renderAttachment() {
+    const el = this._attachEl;
+    const attachment = this._attachment;
+    if (!el) return;
+    if (!attachment || attachment.entryId !== this._entryId || attachment.conversation !== this._conversation) {
+      el.hidden = true;
+      el.innerHTML = "";
+      return;
+    }
+    const gateway = this._gateway();
+    const files = gateway.files;
+    const estimate = transferEstimate(files, attachment.bytes.length, attachment.hops);
+    const hops = attachment.hops ? ` over ${attachment.hops} hop${attachment.hops === 1 ? "" : "s"}` : "";
+    const thumb = attachment.preview
+      ? `<img class="attach-thumb" src="${attachment.preview}" alt="">`
+      : `<ha-icon class="attach-icon" icon="mdi:file-outline"></ha-icon>`;
+    el.innerHTML = `
+      ${thumb}
+      <div class="attach-text">
+        <div class="attach-name">${escapeHtml(attachment.name)} <span>${formatBytes(attachment.bytes.length)}</span></div>
+        <div class="attach-estimate" title="One chunk per round trip on the gateway's modem preset; where a duty cycle applies (EU 868) the radio pauses and the transfer takes much longer">${
+          estimate.chunks
+        } packet${estimate.chunks === 1 ? "" : "s"} · about ${formatTransferTime(estimate.seconds)} on ${escapeHtml(
+          presetName(files.preset)
+        )}${hops}</div>
+      </div>
+      <button type="button" class="attach-send" data-action="send-file" ${this._sending ? "disabled" : ""}>Send</button>
+      <button type="button" class="icon-button" data-action="cancel-attach" aria-label="Remove the file" title="Remove the file">
+        <ha-icon icon="mdi:close"></ha-icon>
+      </button>`;
+    el.hidden = false;
+  }
+
+  _cancelAttachment() {
+    this._attachment = null;
+    this._renderAttachment();
+    this._updateComposer();
+  }
+
+  async _sendAttachment() {
+    const attachment = this._attachment;
+    if (!attachment || this._sending) return;
+    let binary = "";
+    for (let i = 0; i < attachment.bytes.length; i += 0x8000) {
+      binary += String.fromCharCode.apply(null, attachment.bytes.subarray(i, i + 0x8000));
+    }
+    this._sending = true;
+    this._renderAttachment();
+    this._updateComposer();
+    try {
+      const message = await this._hass.callWS({
+        type: "meshtastic/chat/file/send",
+        entry_id: attachment.entryId,
+        conversation: attachment.conversation,
+        name: attachment.name,
+        mime: attachment.mime,
+        data: btoa(binary),
+      });
+      const cached = this._messages.get(`${attachment.entryId}|${attachment.conversation}`);
+      if (cached && !cached.some((m) => m.id === message.id)) {
+        cached.push(message);
+        if (this._entryId === attachment.entryId && this._conversation === attachment.conversation) {
+          this._renderMessages({ stickToBottom: true });
+        }
+      }
+      if (this._attachment === attachment) this._attachment = null;
+    } catch (err) {
+      this._showError(errorText(err));
+    } finally {
+      this._sending = false;
+      this._renderAttachment();
+      this._updateComposer();
+    }
+  }
+
+  async _fileAction(action, id) {
+    const gateway = this._gateway();
+    if (!gateway || !gateway.files) return;
+    const request =
+      action === "file-cancel"
+        ? { type: "meshtastic/chat/file/cancel", entry_id: gateway.entry_id, message_id: id }
+        : { type: "meshtastic/chat/file/accept", entry_id: gateway.entry_id, message_id: id, accept: action === "file-accept" };
+    const button = this._messagesEl.querySelector(`[data-action="${action}"][data-id="${id}"]`);
+    if (button) button.disabled = true;
+    try {
+      await this._hass.callWS(request);
+    } catch (err) {
+      this._showError(errorText(err));
+      if (button) button.disabled = false;
+    }
+  }
+
+  // the bubble of a file message: name and size, a thumbnail for images, progress while it travels, and what
+  // the user can do about it
+  _fileHtml(m, gateway) {
+    const file = m.file || {};
+    const outgoing = m.direction === "out";
+    const active = FILE_ACTIVE.has(m.status);
+    const done = m.status === "delivered" || m.status === "received";
+    const total = file.chunk_count || 0;
+    const sent = Math.min(file.chunks_done || 0, total);
+    const showImage = file.image && file.url && (outgoing || done);
+    const link = file.url && (outgoing || done);
+
+    let body = "";
+    if (showImage) {
+      body += `<a class="file-image" href="${escapeHtml(file.url)}" target="_blank" rel="noopener"><img src="${escapeHtml(
+        file.url
+      )}" alt="${escapeHtml(file.name)}" loading="lazy"></a>`;
+    }
+    const nameHtml = link
+      ? `<a class="file-name" href="${escapeHtml(file.url)}" download="${escapeHtml(file.name)}" target="_blank" rel="noopener"><ha-icon icon="${
+          file.image ? "mdi:image-outline" : "mdi:file-outline"
+        }"></ha-icon>${escapeHtml(file.name)}</a>`
+      : `<span class="file-name"><ha-icon icon="${file.image ? "mdi:image-outline" : "mdi:file-outline"}"></ha-icon>${escapeHtml(file.name)}</span>`;
+    body += `<div class="file-head">${nameHtml}<span class="file-size">${formatBytes(file.size)}</span></div>`;
+
+    if (active || m.status === "failed" || m.status === "rejected" || m.status === "cancelled") {
+      const percent = total ? Math.round((sent / total) * 100) : 0;
+      let line = FILE_LABELS[m.status] || m.status;
+      if ((m.status === "sending" || m.status === "receiving") && total) {
+        line += ` ${sent} / ${total}`;
+        if (file.estimate_seconds && sent < total) {
+          line += ` · about ${formatTransferTime(file.estimate_seconds * (1 - sent / total))} left`;
+        }
+      }
+      if (file.note) line += ` · ${file.note}`;
+      if (file.error) line += `: ${file.error}`;
+      body += `<div class="file-progress ${escapeHtml(m.status)}"><i style="width:${percent}%"></i></div>`;
+      body += `<div class="file-state">${escapeHtml(line)}</div>`;
+    }
+
+    let actions = "";
+    if (m.status === "offered" && !outgoing) {
+      actions = `<button type="button" class="file-button primary" data-action="file-accept" data-id="${escapeHtml(m.id)}">Accept</button>
+        <button type="button" class="file-button" data-action="file-decline" data-id="${escapeHtml(m.id)}">Decline</button>`;
+    } else if (active) {
+      actions = `<button type="button" class="file-button" data-action="file-cancel" data-id="${escapeHtml(m.id)}">Cancel</button>`;
+    }
+    if (actions) body += `<div class="file-actions">${actions}</div>`;
+    return `<div class="file">${body}</div>`;
+  }
+
   // ---------- replies and emoji ----------
 
   _startReply(id) {
@@ -1755,8 +2004,13 @@ class MeshtasticChatPanel extends HTMLElement {
               </button>
             </div>
           </div>
+          <div class="attach-bar" hidden></div>
           <form class="composer">
             <div class="composer-field">
+              <button type="button" class="attach" data-action="attach" aria-label="Send a file" title="Send a file" hidden>
+                <ha-icon icon="mdi:paperclip"></ha-icon>
+              </button>
+              <input type="file" class="file-input" hidden>
               <button type="button" class="emoji-toggle" data-action="emoji" aria-label="Emoji" aria-expanded="false" title="Emoji">
                 <ha-icon icon="mdi:emoticon-happy-outline"></ha-icon>
               </button>
@@ -1793,6 +2047,9 @@ class MeshtasticChatPanel extends HTMLElement {
     this._emojiAllEl = root.querySelector(".emoji-all");
     this._emojiRecentEl = root.querySelector(".emoji-recent");
     this._emojiButton = root.querySelector(".emoji-toggle");
+    this._attachButton = root.querySelector(".attach");
+    this._fileInput = root.querySelector(".file-input");
+    this._attachEl = root.querySelector(".attach-bar");
     this._form = root.querySelector(".composer");
     this._textarea = root.querySelector("textarea");
     this._counter = root.querySelector(".counter");
@@ -1937,6 +2194,8 @@ class MeshtasticChatPanel extends HTMLElement {
       if (reply) this._startReply(reply.dataset.id);
       const quote = ev.target.closest("[data-action=goto]");
       if (quote) this._flashMessage(quote.dataset.id);
+      const fileAction = ev.target.closest("[data-action=file-cancel], [data-action=file-accept], [data-action=file-decline]");
+      if (fileAction) this._fileAction(fileAction.dataset.action, fileAction.dataset.id);
     });
 
     this._messagesEl.addEventListener("keydown", (ev) => {
@@ -1952,6 +2211,18 @@ class MeshtasticChatPanel extends HTMLElement {
     });
 
     this._emojiButton.addEventListener("click", () => this._toggleEmojiPicker());
+    this._attachButton.addEventListener("click", () => this._fileInput.click());
+    this._fileInput.addEventListener("change", () => {
+      const file = this._fileInput.files && this._fileInput.files[0];
+      this._fileInput.value = "";
+      if (file) this._prepareAttachment(file);
+    });
+    this._attachEl.addEventListener("click", (ev) => {
+      const action = ev.target.closest("[data-action]");
+      if (!action) return;
+      if (action.dataset.action === "send-file") this._sendAttachment();
+      else if (action.dataset.action === "cancel-attach") this._cancelAttachment();
+    });
     // keep the focus (and the cursor) in the message while an emoji is picked
     this._emojiEl.addEventListener("mousedown", (ev) => ev.preventDefault());
     this._emojiEl.addEventListener("click", (ev) => {
@@ -2183,6 +2454,7 @@ class MeshtasticChatPanel extends HTMLElement {
         ? `Message ${info.name}${info.public ? " (public)" : ""}`
         : `Message ${info.long_name}`;
     this._renderMessages({ stickToBottom: true });
+    this._renderAttachment();
     this._updateComposer();
   }
 
@@ -2244,14 +2516,22 @@ class MeshtasticChatPanel extends HTMLElement {
           ? `<button class="reply-button" data-action="reply" data-id="${escapeHtml(m.id)}" aria-label="Reply" title="Reply"><ha-icon icon="mdi:reply"></ha-icon></button>`
           : "";
 
+      const isFile = m.kind === "file";
+      if (isFile && !outgoing && m.status !== "received") {
+        // the state of an incoming file matters as much as of a sent one
+        const status = STATUS_ICONS[m.status] || STATUS_ICONS.receiving;
+        footer += `<ha-icon class="status ${escapeHtml(m.status)}" icon="${status.icon}" title="${escapeHtml(status.label)}" aria-label="${escapeHtml(status.label)}"></ha-icon>`;
+      }
+      const content = isFile ? this._fileHtml(m, gateway) : `<div class="text">${escapeHtml(m.text)}</div>`;
+
       html += `
         <div class="row ${outgoing ? "out" : "in"} ${continued ? "continued" : ""}" data-message="${escapeHtml(m.id)}">
           ${!outgoing ? (continued ? '<span class="avatar spacer"></span>' : this._avatar(m.from, m.from_short)) : ""}
           ${outgoing ? replyButton : ""}
-          <div class="bubble ${m.status === "failed" ? "failed" : ""}">
+          <div class="bubble ${m.status === "failed" ? "failed" : ""} ${isFile ? "has-file" : ""}">
             ${author}
             ${this._quoteHtml(m, gateway)}
-            <div class="text">${escapeHtml(m.text)}</div>
+            ${content}
             <div class="footer">${sentBy}${signal}${footer}</div>
           </div>
           ${!outgoing ? replyButton : ""}
@@ -2284,6 +2564,9 @@ class MeshtasticChatPanel extends HTMLElement {
 
     this._textarea.disabled = !enabled;
     this._emojiButton.disabled = !enabled;
+    const canAttach = enabled && !!gateway.files && this._conversation.startsWith("node:");
+    this._attachButton.hidden = !canAttach;
+    this._attachButton.disabled = !canAttach || !!this._attachment;
     this._sendButton.disabled = !enabled || !text || tooLong || !!this._sending;
     this._counter.textContent = text ? `${length}/${max}` : "";
     this._counter.classList.toggle("over", tooLong);

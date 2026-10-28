@@ -322,6 +322,8 @@ Home Assistant, so the history is the same on every device you open Home Assista
 - Sent messages show their delivery state: heard by the mesh, acknowledged by the recipient (direct messages),
   no acknowledgement, or failed with the routing error.
 - Messages sent from the chat are also recorded in the logbook next to received ones.
+- Small files (a photo, a track, a note) can be sent to another Mesh Chat gateway in a direct message, chunk by
+  chunk with every chunk confirmed; see [Files](#files) for what the mesh allows.
 - Works on phones: the list and the conversation are shown one at a time on narrow screens, and the panel follows
   your Home Assistant theme.
 
@@ -352,6 +354,7 @@ and to every user once a gateway allows non-administrators (see the options belo
 | ↩ next to a message | reply to it (see below) |
 | Grey box with a name above a message | the message it answers; click it to jump to the original |
 | ☺ in the composer | opens a strip with the emoji you used last; ⌃ at its end shows all emoji |
+| 📎 in the composer | sends a file to the node of a direct message (only when file transfer is enabled, see [Files](#files)) |
 | Bin icon in the header | administrators can delete the stored history of a conversation; messages on devices are not affected |
 | Name or ⓘ in the header | opens the details of the node or channel (see below) |
 
@@ -457,6 +460,32 @@ position precision of its primary channel (none when that channel shares full pr
 Nodes with a `device_tracker` entity (the nodes selected in the integration options) are the ones Home Assistant's
 own Map panel and automations know as well; the chat map does not need them.
 
+### Files
+
+<p align="center"><img src="docs/mesh-chat/files.png" width="800" alt="A direct message conversation with a received photo, a file being sent with a progress bar, an incoming file waiting to be accepted, and a photo attached to the composer with the estimated transfer time"></p>
+
+With **File transfer between Mesh Chat gateways** enabled (off by default), the composer of a direct message gets a
+paperclip. The file goes to the node of that conversation in chunks of 200 bytes, each sent as a direct message
+with the mesh's acknowledgement, and each confirmed by the other side's Home Assistant before the next one is sent.
+A lost chunk or acknowledgement is repeated, a restart of either Home Assistant resumes where it stopped, and the
+finished file is checked against its SHA-256. The file then appears in the conversation on both sides: images with
+a thumbnail, everything else with a download link. Files are kept with the chat history under
+`.storage/meshtastic.files/<entry id>` and removed with their messages.
+
+What to expect from the mesh, which is the limit here, not the code:
+
+- **Both ends must be Mesh Chat.** The packets use Meshtastic's private app port; phones, the web client and the
+  firmware ignore them. A node without Mesh Chat never answers, and the sender says so after five minutes.
+- **Direct messages only.** Channels give no end-to-end acknowledgement, so files cannot go to a channel.
+- **Small files.** One full packet is on air for about 2.2 s on LongFast, so a 32 kB file (160 packets) takes
+  roughly 12 minutes over one hop in a region without a duty cycle, and about two hours where the 10 % duty cycle
+  applies (EU 868). MediumFast is about three times faster, ShortFast ten times. Every hop multiplies the airtime.
+  The panel shows the estimate before you send; photos are reduced in the browser to 320 px (option) so a phone
+  picture becomes 10 to 25 kB.
+- **The radio decides the pace.** A chunk waits while the gateway's channel is more than 25 % busy, backs off when
+  the firmware reports its duty cycle limit, and gives up after a few failed retries or when the other side stops
+  answering. The reason is shown under the progress bar.
+
 ### Options
 
 | Option | Default | Description |
@@ -465,8 +494,15 @@ own Map panel and automations know as well; the chat map does not need them.
 | Prefix messages with the sender's name | off | All messages sent from Home Assistant come from the gateway node. When on, the Home Assistant user's name is added, e.g. `Alex B.: on my way` |
 | Messages kept per conversation | 200 | Older messages are removed once a conversation reaches this size |
 | Channel management from the chat | off | *Administrators only* or *All chat users* lets those users create, rename, re-key, enable or disable channels on the gateway from the channel details; off keeps channels read-only |
+| File transfer between Mesh Chat gateways | off | Lets users attach a file to a direct message; this gateway also accepts files from other Mesh Chat gateways |
+| Largest file (kB) | 32 | Files above this size are refused, incoming and outgoing (1 to 128 kB) |
+| Incoming files | accept automatically | *Ask first* keeps an offer in the conversation until a user accepts it; the sender gives up after five minutes |
+| Photos are reduced to | 320 px | Longest side of a photo after the browser re-encodes it as JPEG |
+| Chunks in flight before the other side must acknowledge | 1 | 1 is stop-and-wait; more speeds up fast presets on a good link. This is what the gateway asks of senders |
+| Storage for files (MB) | 50 | Offers are refused once the files of this gateway reach this size |
 
-History is kept in `.storage/meshtastic.chat.<entry id>` and removed when the gateway is deleted.
+History is kept in `.storage/meshtastic.chat.<entry id>`, files in `.storage/meshtastic.files/<entry id>`; both are
+removed when the gateway is deleted.
 
 ### Automations and other chats
 
@@ -483,6 +519,8 @@ data:
 
 Every message sent through the chat (from the panel or the action) fires a `meshtastic_chat_message_sent` event once
 its delivery is settled, with the target, the text, the applied name prefix, the `sent_by` label and the status.
+Files fire `meshtastic_chat_file_sent` and `meshtastic_chat_file_received` with the node, the name, size and MIME
+type, the path of the stored file and its URL in Home Assistant (the URL needs a logged-in user of the chat).
 Together with the `meshtastic_api_text_message` event for received messages this is all that is needed to mirror a
 channel to another chat:
 

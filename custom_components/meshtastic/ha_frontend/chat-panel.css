@@ -340,6 +340,92 @@ textarea {
   max-height: 160px;
 }
 .counter { font-size: 11px; color: var(--secondary-text-color); margin-left: 8px; flex-shrink: 0; }
+.attach {
+  width: 28px;
+  height: 28px;
+  margin: -2px 6px -2px -6px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--secondary-text-color);
+  cursor: pointer;
+  --mdc-icon-size: 22px;
+  flex-shrink: 0;
+}
+.attach:hover:not(:disabled) { color: var(--primary-color); }
+.attach:disabled { opacity: 0.4; cursor: default; }
+.attach-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 16px 6px;
+  padding: 8px 8px 8px 10px;
+  border-radius: 12px;
+  background: var(--secondary-background-color);
+  font-size: 13px;
+}
+.attach-thumb { width: 48px; height: 48px; object-fit: cover; border-radius: 8px; flex-shrink: 0; }
+.attach-icon { --mdc-icon-size: 32px; color: var(--secondary-text-color); flex-shrink: 0; }
+.attach-text { flex: 1; min-width: 0; }
+.attach-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-name span { font-weight: 400; color: var(--secondary-text-color); margin-left: 6px; }
+.attach-estimate { color: var(--secondary-text-color); font-size: 12px; margin-top: 2px; }
+.attach-send {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 18px;
+  background: var(--primary-color);
+  color: var(--text-primary-color, #fff);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.attach-send:disabled { opacity: 0.5; cursor: default; }
+
+/* file messages */
+.bubble.has-file { min-width: min(240px, 100%); }
+.file { display: flex; flex-direction: column; gap: 6px; }
+.file-image { display: block; margin: -2px -4px 2px; border-radius: 8px; overflow: hidden; line-height: 0; }
+.file-image img { display: block; max-width: 100%; max-height: 320px; border-radius: 8px; }
+.file-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.file-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+  text-decoration: none;
+  font-weight: 600;
+  --mdc-icon-size: 18px;
+}
+a.file-name:hover { text-decoration: underline; }
+.file-size { flex-shrink: 0; font-size: 12px; opacity: 0.75; }
+.file-progress { height: 5px; border-radius: 3px; background: rgba(127, 127, 127, 0.25); overflow: hidden; }
+.file-progress i { display: block; height: 100%; background: var(--primary-color); transition: width 0.4s ease; }
+.row.out .file-progress i { background: var(--text-primary-color, #fff); }
+.file-progress.offering i, .file-progress.offered i { width: 100% !important; opacity: 0.35; }
+.file-progress.failed i, .file-progress.rejected i { background: var(--error-color, #db4437); }
+.file-progress.cancelled i { opacity: 0.4; }
+.file-state { font-size: 12px; opacity: 0.85; overflow-wrap: anywhere; }
+.file-actions { display: flex; gap: 8px; margin-top: 2px; }
+.file-button {
+  padding: 5px 12px;
+  border-radius: 14px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.file-button.primary { background: var(--primary-color); border-color: transparent; color: var(--text-primary-color, #fff); }
+.file-button:disabled { opacity: 0.5; cursor: default; }
+.row.out .file-button { border-color: rgba(255, 255, 255, 0.7); }
 .counter.over { color: var(--error-color, #db4437); font-weight: 600; }
 .send {
   width: 44px;
