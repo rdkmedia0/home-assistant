@@ -45,7 +45,7 @@ from .const import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine, Iterable, Mapping, MutableMapping
+    from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, MutableMapping
     from types import MappingProxyType, TracebackType
 
     from google.protobuf.message import Message
@@ -259,18 +259,50 @@ class MeshtasticApiClient:
         Returns (node id that sent the routing ack, routing error name). Both are None if no acknowledgement
         arrived before the timeout. An error name of "NONE" means the packet was acknowledged without error.
         """
+        return await self._send_with_ack(
+            self._interface.send_text_message(
+                text,
+                destination=destination_id,
+                want_ack=True,
+                channel_index=channel_index,
+                packet_id=packet_id,
+                reply_id=reply_id,
+            ),
+            ack_timeout,
+        )
+
+    async def send_data_with_ack(  # noqa: PLR0913
+        self,
+        payload: bytes,
+        destination_id: int,
+        *,
+        port_num: portnums_pb2.PortNum.ValueType = portnums_pb2.PortNum.PRIVATE_APP,
+        channel_index: int | None = None,
+        ack_timeout: float = 60,
+        packet_id: int | None = None,
+    ) -> tuple[int | None, str | None]:
+        """
+        Send raw application data on a port number, requesting an acknowledgement.
+
+        Returns the same pair as ``send_text_with_ack``: the node that acknowledged (the destination itself for a
+        direct message) and the routing error name, "NONE" for success; both None when nothing arrived in time.
+        """
+        return await self._send_with_ack(
+            self._interface.send_data_message(
+                payload,
+                destination_id,
+                port_num=port_num,
+                want_ack=True,
+                channel_index=channel_index,
+                packet_id=packet_id,
+            ),
+            ack_timeout,
+        )
+
+    @staticmethod
+    async def _send_with_ack(send: Awaitable[Packet | None], ack_timeout: float) -> tuple[int | None, str | None]:
         try:
-            ack_packet = await asyncio.wait_for(
-                self._interface.send_text_message(
-                    text,
-                    destination=destination_id,
-                    want_ack=True,
-                    channel_index=channel_index,
-                    packet_id=packet_id,
-                    reply_id=reply_id,
-                ),
-                timeout=ack_timeout,
-            )
+            ack_packet = await asyncio.wait_for(send, timeout=ack_timeout)
         except TimeoutError:
             return None, None
         except Exception as e:
@@ -284,6 +316,19 @@ class MeshtasticApiClient:
         if isinstance(routing, mesh_pb2.Routing):
             error_name = mesh_pb2.Routing.Error.Name(routing.error_reason)
         return ack_packet.from_id, error_name
+
+    def add_data_listener(
+        self,
+        port_num: portnums_pb2.PortNum.ValueType,
+        callback: Callable[[MeshNode, Packet[bytes]], Awaitable[None]],
+    ) -> Callable[[], None]:
+        """
+        Call ``callback`` with every packet received on a port number, as the raw packet.
+
+        Meant for the private app port numbers, whose payload the client does not interpret. Returns a function
+        that removes the listener again.
+        """
+        return self._interface.add_packet_app_listener(packet_type=port_num, callback=callback, as_packet=True)
 
     def new_packet_id(self) -> int:
         return self._interface.generate_packet_id()

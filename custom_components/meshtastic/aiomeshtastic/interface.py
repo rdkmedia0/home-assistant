@@ -1112,6 +1112,39 @@ class MeshInterface:
         ``reply_id`` is the id of the packet it answers; ``packet_id`` lets the caller choose the id of the new
         packet (see ``generate_packet_id``) to refer to it before it is acknowledged.
         """
+        return await self.send_data_message(
+            text.encode("utf-8"),
+            destination,
+            port_num=portnums_pb2.PortNum.TEXT_MESSAGE_APP,
+            want_ack=want_ack,
+            channel_index=channel_index,
+            priority=priority,
+            packet_id=packet_id,
+            reply_id=reply_id,
+        )
+
+    async def send_data_message(  # noqa: PLR0913
+        self,
+        payload: bytes,
+        destination: MeshNode | MeshChannel | int | str = None,
+        *,
+        port_num: portnums_pb2.PortNum.ValueType = portnums_pb2.PortNum.PRIVATE_APP,
+        want_ack: bool = False,
+        channel_index: int | None = None,
+        priority: MeshPacket.Priority | None = None,
+        packet_id: int | None = None,
+        reply_id: int | None = None,
+    ) -> None:
+        """
+        Send raw application data on a port number.
+
+        The payload is limited to what a Meshtastic packet carries (``mesh_pb2.Constants.DATA_PAYLOAD_LEN``); bigger
+        payloads are refused here rather than NAKed by the radio.
+        """
+        if len(payload) > mesh_pb2.Constants.DATA_PAYLOAD_LEN:
+            msg = f"Payload of {len(payload)} bytes is larger than {mesh_pb2.Constants.DATA_PAYLOAD_LEN} bytes"
+            raise ValueError(msg)
+
         if isinstance(destination, MeshNode):
             to_node = destination.id
             channel_index = None
@@ -1145,8 +1178,8 @@ class MeshInterface:
             channel_index=channel_index,
             to_node=to_node,
             from_node=self._connected_node_info.my_node_num,
-            message=text.encode("utf-8"),
-            port_num=portnums_pb2.PortNum.TEXT_MESSAGE_APP,
+            message=payload,
+            port_num=port_num,
             priority=priority or (MeshPacket.Priority.RELIABLE if want_ack else MeshPacket.Priority.DEFAULT),
             want_response=False,
             ack=want_ack,

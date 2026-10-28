@@ -11,7 +11,7 @@ import google
 from .const import LOGGER
 from .protobuf import admin_pb2, mesh_pb2, portnums_pb2, telemetry_pb2
 
-T = TypeVar("T", None, mesh_pb2.Routing, telemetry_pb2.Telemetry, admin_pb2.AdminMessage, str)
+T = TypeVar("T", None, mesh_pb2.Routing, telemetry_pb2.Telemetry, admin_pb2.AdminMessage, str, bytes)
 
 
 class Packet[T]:
@@ -83,6 +83,9 @@ class Packet[T]:
             route_discovery = mesh_pb2.RouteDiscovery()
             route_discovery.ParseFromString(payload)
             return route_discovery
+        if portnums_pb2.PortNum.PRIVATE_APP <= port_num <= portnums_pb2.PortNum.MAX:
+            # the port numbers reserved for private apps carry whatever the app defines: hand over the raw bytes
+            return payload
         self._logger.debug("Unhandled portnum %s", port_num)
         return None
 
