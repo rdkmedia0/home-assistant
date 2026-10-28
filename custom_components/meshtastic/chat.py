@@ -36,6 +36,7 @@ from .api import (
     EVENT_MESHTASTIC_API_TEXT_MESSAGE,
     MeshtasticApiClientError,
 )
+from .chat_transfer import MeshtasticFileTransfers, file_transfer_enabled
 from .const import (
     CHAT_ACK_TIMEOUT,
     CHAT_CHANNEL_COUNT,
@@ -52,6 +53,9 @@ from .const import (
     CHAT_CHANNEL_ROLE_PRIMARY,
     CHAT_CHANNEL_ROLE_SECONDARY,
     CHAT_DEDUPLICATE_WINDOW,
+    CHAT_FILE_DATA_INPUT_MAX_LENGTH,
+    CHAT_FILE_MIME_INPUT_MAX_LENGTH,
+    CHAT_FILE_NAME_INPUT_MAX_LENGTH,
     CHAT_HISTORY_PAGE_SIZE,
     CHAT_HISTORY_PAGE_SIZE_MAX,
     CHAT_MAX_TEXT_BYTES,
@@ -277,6 +281,7 @@ class MeshtasticChat:
         )
         self._unsubscribe: CALLBACK_TYPE | None = None
         self._pending: set[asyncio.Task] = set()
+        self.files: MeshtasticFileTransfers | None = None
 
     @property
     def requires_admin(self) -> bool:
@@ -316,11 +321,16 @@ class MeshtasticChat:
                     if message.get("status") == MessageStatus.SENDING:
                         message["status"] = MessageStatus.NO_ACK
         self._unsubscribe = self.hass.bus.async_listen(EVENT_MESHTASTIC_API_TEXT_MESSAGE, self._on_text_message)
+        if file_transfer_enabled(self.entry):
+            self.files = MeshtasticFileTransfers(self.hass, self.entry, self)
+            await self.files.async_setup()
 
     async def async_unload(self) -> None:
         if self._unsubscribe:
             self._unsubscribe()
             self._unsubscribe = None
+        if self.files is not None:
+            await self.files.async_unload()
         for task in list(self._pending):
             task.cancel()
         if self._pending:
@@ -330,6 +340,35 @@ class MeshtasticChat:
     @staticmethod
     async def async_remove_store(hass: HomeAssistant, entry_id: str) -> None:
         await Store(hass, CHAT_STORAGE_VERSION, f"{DOMAIN}.chat.{entry_id}", private=True).async_remove()
+        await MeshtasticFileTransfers.async_remove(hass, entry_id)
+
+    # what the file transfers use of the chat
+    parse_conversation = staticmethod(parse_conversation)
+    node_conversation = staticmethod(node_conversation)
+
+    def node_names(self, node_id: int) -> tuple[str, str, str]:
+        return self._node_names(node_id)
+
+    def add_message(self, conversation: str, message: dict[str, Any]) -> None:
+        self._append(conversation, message)
+
+    def publish_update(self, conversation: str, message: dict[str, Any]) -> None:
+        self._publish("update", conversation, message)
+
+    def find_message(
+        self, conversation: str, *, message_id: str | None = None, packet_id: int | None = None
+    ) -> dict[str, Any] | None:
+        return self._find_message(conversation, message_id=message_id, packet_id=packet_id)
+
+    def file_messages(self) -> list[dict[str, Any]]:
+        return [m for messages in self._conversations.values() for m in messages if m.get("kind") == "file"]
+
+    def log_file(self, message: dict[str, Any], node: int) -> None:
+        """Record a transferred file in the logbook, next to the messages of the direct message conversation."""
+        if message["direction"] == "out":
+            self._log_sent_message(message, node, None)
+        else:
+            self._log_received_message(message, node)
 
     def _data_to_save(self) -> dict[str, Any]:
         return {"conversations": self._conversations}
@@ -353,7 +392,10 @@ class MeshtasticChat:
         messages = self._conversations.setdefault(conversation, [])
         messages.append(message)
         if len(messages) > self._history_size:
+            dropped = messages[: len(messages) - self._history_size]
             del messages[: len(messages) - self._history_size]
+            if self.files is not None:
+                self.files.async_discard_messages(dropped)
         self._publish("message", conversation, message)
 
     @callback
@@ -439,7 +481,9 @@ class MeshtasticChat:
         return [dict(m) for m in messages[-limit:]]
 
     def clear(self, conversation: str) -> None:
-        if self._conversations.pop(conversation, None) is not None:
+        if (messages := self._conversations.pop(conversation, None)) is not None:
+            if self.files is not None:
+                self.files.async_discard_messages(messages)
             self._store.async_delay_save(self._data_to_save, CHAT_STORAGE_SAVE_DELAY)
             async_dispatcher_send(
                 self.hass,
@@ -984,6 +1028,29 @@ class MeshtasticChat:
                 },
             )
 
+    def _log_received_message(self, message: dict[str, Any], sender: int) -> None:
+        """Record a file received in a direct message in the logbook (texts are logged from the API event)."""
+        gateway_id = self.gateway_id
+        if gateway_id is None:
+            return
+        entity_registry = er.async_get(self.hass)
+        unique_id = GatewayDirectMessageEntity.build_unique_id(self.entry.entry_id, gateway_id)
+        entity_id = entity_registry.async_get_entity_id(DOMAIN, DOMAIN, unique_id)
+        if entity_id is None:
+            return
+        from_long, _, from_user_id = self._node_names(sender)
+        device = dr.async_get(self.hass).async_get_device(identifiers={(DOMAIN, str(gateway_id))})
+        self.hass.bus.async_fire(
+            EVENT_MESHTASTIC_DOMAIN_MESSAGE_LOG,
+            {
+                ATTR_ENTITY_ID: entity_id,
+                ATTR_DEVICE_ID: device.id if device else None,
+                EVENT_MESHTASTIC_MESSAGE_LOG_EVENT_DATA_ATTR_FROM_NAME: f"{from_long} ({from_user_id})",
+                EVENT_MESHTASTIC_MESSAGE_LOG_EVENT_DATA_ATTR_PKI: True,
+                EVENT_MESHTASTIC_MESSAGE_LOG_EVENT_DATA_ATTR_MESSAGE: message["text"],
+            },
+        )
+
     def _log_sent_message(self, message: dict[str, Any], destination: int, channel_index: int | None) -> None:
         """Record messages sent from the chat in the logbook, next to the received ones."""
         gateway_id = self.gateway_id
@@ -1071,6 +1138,9 @@ def _async_register_websocket_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_chat_channel)
     websocket_api.async_register_command(hass, websocket_chat_channel_set)
     websocket_api.async_register_command(hass, websocket_chat_map)
+    websocket_api.async_register_command(hass, websocket_chat_file_send)
+    websocket_api.async_register_command(hass, websocket_chat_file_accept)
+    websocket_api.async_register_command(hass, websocket_chat_file_cancel)
 
 
 @websocket_api.websocket_command({vol.Required("type"): "meshtastic/chat/gateways"})
@@ -1106,6 +1176,7 @@ async def websocket_chat_gateways(
                 "can_clear": connection.user.is_admin,
                 "can_favorite": connection.user.is_admin,
                 "can_manage_channels": chat.can_manage_channels(connection.user),
+                "files": chat.files.info() if chat.files is not None else None,
                 "conversations": chat.summaries(),
                 **targets,
             }
@@ -1350,3 +1421,90 @@ async def websocket_chat_map(
         connection.send_error(msg["id"], websocket_api.ERR_UNKNOWN_ERROR, _error_text(e))
         return
     connection.send_result(msg["id"], result)
+
+
+def _get_files(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> MeshtasticFileTransfers | None:
+    if (chat := _get_chat(hass, connection, msg)) is None:
+        return None
+    if chat.files is None:
+        connection.send_error(
+            msg["id"], websocket_api.ERR_NOT_SUPPORTED, "File transfer is not enabled for this gateway"
+        )
+        return None
+    return chat.files
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "meshtastic/chat/file/send",
+        vol.Required("entry_id"): str,
+        vol.Required("conversation"): str,
+        vol.Required("name"): vol.All(str, vol.Length(min=1, max=CHAT_FILE_NAME_INPUT_MAX_LENGTH)),
+        vol.Optional("mime", default=""): vol.All(str, vol.Length(max=CHAT_FILE_MIME_INPUT_MAX_LENGTH)),
+        vol.Required("data"): vol.All(str, vol.Length(max=CHAT_FILE_DATA_INPUT_MAX_LENGTH)),  # base64
+    }
+)
+@websocket_api.async_response
+async def websocket_chat_file_send(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    if (files := _get_files(hass, connection, msg)) is None:
+        return
+    try:
+        data = base64.b64decode(msg["data"], validate=True)
+    except (binascii.Error, ValueError):
+        connection.send_error(msg["id"], websocket_api.ERR_INVALID_FORMAT, "The file data is not valid base64")
+        return
+    try:
+        message = await files.async_send(
+            msg["conversation"], data, name=msg["name"], mime=msg["mime"], user=connection.user
+        )
+    except vol.Invalid as e:
+        connection.send_error(msg["id"], websocket_api.ERR_INVALID_FORMAT, str(e))
+        return
+    connection.send_result(msg["id"], message)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "meshtastic/chat/file/accept",
+        vol.Required("entry_id"): str,
+        vol.Required("message_id"): str,
+        vol.Required("accept"): bool,
+    }
+)
+@websocket_api.async_response
+async def websocket_chat_file_accept(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    if (files := _get_files(hass, connection, msg)) is None:
+        return
+    try:
+        await files.async_accept(msg["message_id"], accept=msg["accept"])
+    except vol.Invalid as e:
+        connection.send_error(msg["id"], websocket_api.ERR_INVALID_FORMAT, str(e))
+        return
+    connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "meshtastic/chat/file/cancel",
+        vol.Required("entry_id"): str,
+        vol.Required("message_id"): str,
+    }
+)
+@websocket_api.async_response
+async def websocket_chat_file_cancel(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    if (files := _get_files(hass, connection, msg)) is None:
+        return
+    try:
+        await files.async_cancel(msg["message_id"])
+    except vol.Invalid as e:
+        connection.send_error(msg["id"], websocket_api.ERR_INVALID_FORMAT, str(e))
+        return
+    connection.send_result(msg["id"])

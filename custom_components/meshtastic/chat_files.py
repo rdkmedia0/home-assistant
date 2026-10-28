@@ -484,15 +484,23 @@ class Reassembly:
         window = {seq for seq in self.chunks if next_seq < seq <= next_seq + MAX_WINDOW}
         return Ack(self.offer.transfer_id, next_seq, frozenset(window))
 
-    def assemble(self) -> bytes:
-        """Return the original file; raises when chunks are missing or the hash does not match the offer."""
+    def assemble(self, max_size: int | None = None) -> bytes:
+        """
+        Return the original file; raises when chunks are missing or the hash does not match the offer.
+
+        ``max_size`` bounds what a deflated body may inflate to, so a peer cannot fill the disk with a tiny packet.
+        """
         if not self.complete:
             msg = "The transfer is not complete"
             raise ProtocolError(msg)
         body = b"".join(self.chunks[seq] for seq in range(self.offer.chunk_count))
         if self.offer.deflate:
             try:
-                body = zlib.decompress(body)
+                inflater = zlib.decompressobj()
+                body = inflater.decompress(body, max_size or 0)
+                if not inflater.eof:
+                    msg = "The file inflates to more than allowed" if inflater.unconsumed_tail else "truncated"
+                    raise ProtocolError(msg)
             except zlib.error as e:
                 msg = "The file could not be inflated"
                 raise ProtocolError(msg) from e
