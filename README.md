@@ -496,7 +496,6 @@ What to expect from the mesh, which is the limit here, not the code:
 | Channel management from the chat | off | *Administrators only* or *All chat users* lets those users create, rename, re-key, enable or disable channels on the gateway from the channel details; off keeps channels read-only |
 | File transfer between Mesh Chat gateways | off | Lets users attach a file to a direct message; this gateway also accepts files from other Mesh Chat gateways |
 | Largest file (kB) | 32 | Files above this size are refused, incoming and outgoing (1 to 128 kB) |
-| Incoming files | accept automatically | *Ask first* keeps an offer in the conversation until a user accepts it; the sender gives up after five minutes |
 | Photos are reduced to | 320 px | Longest side of a photo after the browser re-encodes it as JPEG |
 | Chunks in flight before the other side must acknowledge | 1 | 1 is stop-and-wait; more speeds up fast presets on a good link. This is what the gateway asks of senders |
 | Storage for files (MB) | 50 | Offers are refused once the files of this gateway reach this size |

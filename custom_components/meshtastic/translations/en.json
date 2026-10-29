@@ -102,7 +102,6 @@
           "channel_management": "Channel management from the chat",
           "files_enable": "File transfer between Mesh Chat gateways",
           "files_max_kb": "Largest file (kB)",
-          "files_accept": "Incoming files",
           "files_image_px": "Photos are reduced to (longest side)",
           "files_window": "Chunks in flight before the other side must acknowledge",
           "files_storage_mb": "Storage for files (MB)"
@@ -114,7 +113,6 @@
           "channel_management": "Lets users create, rename, re-key, enable or disable channels on this gateway from the channel details in the chat. Every change is confirmed first. Off: channels are read-only in the chat.",
           "files_enable": "Lets users attach a small file to a direct message. The other node must run Mesh Chat with this option as well; phones and the web client ignore the packets. The mesh is slow: a 32 kB file takes about 12 minutes on LongFast, and hours where a duty cycle applies (EU). Off: this gateway neither sends nor accepts files.",
           "files_max_kb": "Files above this size are refused, incoming and outgoing. 1 to 128 kB.",
-          "files_accept": "Automatically: files from any node are stored as they arrive, up to the size and storage limits. Ask first: the offer waits in the conversation until a user accepts it (the sender gives up after 5 minutes).",
           "files_image_px": "Photos are re-encoded in the browser before they are sent, so they fit the mesh. 320 px gives about 10 to 25 kB.",
           "files_window": "1 is stop-and-wait: every chunk is confirmed by the other side's Home Assistant before the next is sent. More chunks in flight speed up fast presets (MediumFast, ShortFast) on a good link; this is what this gateway asks of senders.",
           "files_storage_mb": "Received and sent files are kept with the chat history under .storage and removed with their messages. Offers are refused once this is full."
@@ -182,7 +180,6 @@
               "channel_management": "Channel management from the chat",
               "files_enable": "File transfer between Mesh Chat gateways",
               "files_max_kb": "Largest file (kB)",
-              "files_accept": "Incoming files",
               "files_image_px": "Photos are reduced to (longest side)",
               "files_window": "Chunks in flight before the other side must acknowledge",
               "files_storage_mb": "Storage for files (MB)"
@@ -194,7 +191,6 @@
               "channel_management": "Lets users create, rename, re-key, enable or disable channels on this gateway from the channel details in the chat. Every change is confirmed first. Off: channels are read-only in the chat.",
               "files_enable": "Lets users attach a small file to a direct message. The other node must run Mesh Chat with this option as well; phones and the web client ignore the packets. The mesh is slow: a 32 kB file takes about 12 minutes on LongFast, and hours where a duty cycle applies (EU). Off: this gateway neither sends nor accepts files.",
               "files_max_kb": "Files above this size are refused, incoming and outgoing. 1 to 128 kB.",
-              "files_accept": "Automatically: files from any node are stored as they arrive, up to the size and storage limits. Ask first: the offer waits in the conversation until a user accepts it (the sender gives up after 5 minutes).",
               "files_image_px": "Photos are re-encoded in the browser before they are sent, so they fit the mesh. 320 px gives about 10 to 25 kB.",
               "files_window": "1 is stop-and-wait: every chunk is confirmed by the other side's Home Assistant before the next is sent. More chunks in flight speed up fast presets (MediumFast, ShortFast) on a good link; this is what this gateway asks of senders.",
               "files_storage_mb": "Received and sent files are kept with the chat history under .storage and removed with their messages. Offers are refused once this is full."
@@ -369,12 +365,6 @@
         "off": "Off (read-only)",
         "admin": "Administrators only",
         "all": "All chat users"
-      }
-    },
-    "chat_files_accept": {
-      "options": {
-        "auto": "Accept automatically",
-        "ask": "Ask first"
       }
     }
   },

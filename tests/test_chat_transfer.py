@@ -363,30 +363,13 @@ async def test_receiver_that_stops_answering(hass: HomeAssistant, mesh: FakeMesh
 # --- the receiver's say ----------------------------------------------------------------------------------------
 
 
-async def test_receiver_asks_before_accepting(hass: HomeAssistant, mesh: FakeMesh) -> None:
+async def test_receiver_accepts_without_anyone_watching(hass: HomeAssistant, mesh: FakeMesh) -> None:
+    # an option left over from the "ask first" mode must not make the sender wait for a person
     a, b = await _two_gateways(hass, mesh, files_accept="ask")
     message = await a.files.async_send(A_TO_B, PHOTO, name="photo.jpg")
-    await until(lambda: b.file_message(B_TO_A) is not None)
-    offered = b.file_message(B_TO_A)
-    assert offered["status"] == FileStatus.OFFERED
-    assert a.message(A_TO_B, message["id"])["status"] == FileStatus.OFFERING
-
-    await b.files.async_accept(offered["id"], accept=True)
     done = await _wait_status(a, A_TO_B, message["id"], FileStatus.DELIVERED, FileStatus.FAILED)
     assert done["status"] == FileStatus.DELIVERED, done["file"]
-    with pytest.raises(Exception, match="No file is waiting"):
-        await b.files.async_accept(offered["id"], accept=True)
-
-
-async def test_receiver_declines(hass: HomeAssistant, mesh: FakeMesh) -> None:
-    a, b = await _two_gateways(hass, mesh, files_accept="ask")
-    message = await a.files.async_send(A_TO_B, PHOTO, name="photo.jpg")
-    await until(lambda: b.file_message(B_TO_A) is not None)
-
-    await b.files.async_accept(b.file_message(B_TO_A)["id"], accept=False)
-    done = await _wait_status(a, A_TO_B, message["id"], FileStatus.REJECTED, FileStatus.FAILED)
-    assert (done["status"], done["file"]["error"]) == (FileStatus.REJECTED, "the file was declined")
-    assert b.file_message(B_TO_A)["status"] == FileStatus.REJECTED
+    assert b.file_message(B_TO_A)["status"] == FileStatus.RECEIVED
 
 
 async def test_receiver_rejects_what_it_cannot_take(hass: HomeAssistant, mesh: FakeMesh) -> None:
@@ -518,7 +501,7 @@ async def test_files_are_served_and_removed_with_their_messages(
 
 
 async def test_websocket_file_commands(hass: HomeAssistant, mesh: FakeMesh, hass_ws_client) -> None:
-    a, b = await _two_gateways(hass, mesh, files_accept="ask")
+    a, b = await _two_gateways(hass, mesh)
     ws = await hass_ws_client(hass)
 
     await ws.send_json({"id": 1, "type": "meshtastic/chat/gateways"})
@@ -526,7 +509,6 @@ async def test_websocket_file_commands(hass: HomeAssistant, mesh: FakeMesh, hass
     assert gateways[a.entry.entry_id]["files"] == {
         "enabled": True,
         "max_bytes": 32 * 1024,
-        "ask": False,
         "window": 1,
         "image_max_px": 320,
         "chunk_bytes": 200,
@@ -535,7 +517,6 @@ async def test_websocket_file_commands(hass: HomeAssistant, mesh: FakeMesh, hass
         "overhead": 1.0,
         "url": f"/api/meshtastic/chat/files/{a.entry.entry_id}",
     }
-    assert gateways[b.entry.entry_id]["files"]["ask"] is True
 
     await ws.send_json(
         {
@@ -552,18 +533,6 @@ async def test_websocket_file_commands(hass: HomeAssistant, mesh: FakeMesh, hass
     assert response["success"], response
     message = response["result"]
     assert message["file"]["name"] == "photo.jpg"
-    await until(lambda: b.file_message(B_TO_A) is not None)
-
-    await ws.send_json(
-        {
-            "id": 3,
-            "type": "meshtastic/chat/file/accept",
-            "entry_id": b.entry.entry_id,
-            "message_id": b.file_message(B_TO_A)["id"],
-            "accept": True,
-        }
-    )
-    assert (await ws.receive_json())["success"]
     done = await _wait_status(a, A_TO_B, message["id"], FileStatus.DELIVERED, FileStatus.FAILED)
     assert done["status"] == FileStatus.DELIVERED
 

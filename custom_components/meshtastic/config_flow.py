@@ -40,10 +40,6 @@ from .const import (
     CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_OFF,
     CONF_OPTION_CHAT_ENABLE,
     CONF_OPTION_CHAT_ENABLE_DEFAULT,
-    CONF_OPTION_CHAT_FILES_ACCEPT,
-    CONF_OPTION_CHAT_FILES_ACCEPT_ASK,
-    CONF_OPTION_CHAT_FILES_ACCEPT_AUTO,
-    CONF_OPTION_CHAT_FILES_ACCEPT_DEFAULT,
     CONF_OPTION_CHAT_FILES_ENABLE,
     CONF_OPTION_CHAT_FILES_ENABLE_DEFAULT,
     CONF_OPTION_CHAT_FILES_IMAGE_PX,
@@ -286,16 +282,6 @@ def _build_chat_schema(
             ): vol.All(
                 vol.Coerce(int),
                 vol.Range(min=CONF_OPTION_CHAT_FILES_MAX_KB_MIN, max=CONF_OPTION_CHAT_FILES_MAX_KB_MAX),
-            ),
-            vol.Required(
-                CONF_OPTION_CHAT_FILES_ACCEPT,
-                default=options.get(CONF_OPTION_CHAT_FILES_ACCEPT, CONF_OPTION_CHAT_FILES_ACCEPT_DEFAULT),
-            ): SelectSelector(
-                SelectSelectorConfig(
-                    options=[CONF_OPTION_CHAT_FILES_ACCEPT_AUTO, CONF_OPTION_CHAT_FILES_ACCEPT_ASK],
-                    translation_key="chat_files_accept",
-                    mode=SelectSelectorMode.DROPDOWN,
-                )
             ),
             vol.Required(
                 CONF_OPTION_CHAT_FILES_IMAGE_PX,

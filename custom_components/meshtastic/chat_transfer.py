@@ -60,9 +60,6 @@ from .const import (
     CHAT_FILES_URL,
     CHAT_STORAGE_SAVE_DELAY,
     CONF_OPTION_CHAT,
-    CONF_OPTION_CHAT_FILES_ACCEPT,
-    CONF_OPTION_CHAT_FILES_ACCEPT_ASK,
-    CONF_OPTION_CHAT_FILES_ACCEPT_DEFAULT,
     CONF_OPTION_CHAT_FILES_ENABLE,
     CONF_OPTION_CHAT_FILES_ENABLE_DEFAULT,
     CONF_OPTION_CHAT_FILES_IMAGE_PX,
@@ -285,13 +282,6 @@ class MeshtasticFileTransfers:
         )
 
     @property
-    def ask_before_accepting(self) -> bool:
-        return (
-            file_options(self.entry).get(CONF_OPTION_CHAT_FILES_ACCEPT, CONF_OPTION_CHAT_FILES_ACCEPT_DEFAULT)
-            == CONF_OPTION_CHAT_FILES_ACCEPT_ASK
-        )
-
-    @property
     def window(self) -> int:
         return max(
             1,
@@ -319,7 +309,6 @@ class MeshtasticFileTransfers:
         return {
             "enabled": True,
             "max_bytes": self.max_file_bytes,
-            "ask": self.ask_before_accepting,
             "window": self.window,
             "image_max_px": self.image_max_px,
             "chunk_bytes": chat_files.DEFAULT_CHUNK_BYTES,
@@ -923,22 +912,20 @@ class MeshtasticFileTransfers:
             if existing.node != node:
                 await self._send_control(node, Reject(offer.transfer_id, RejectReason.BUSY).encode())
                 return
-            # the sender restarted: tell it what we already have (or keep waiting for the user, as before)
+            # the sender restarted: tell it what we already have
             existing.touch()
-            if existing.accepted:
-                await self._send_accept(existing)
+            await self._send_accept(existing)
             return
         reason = await self._reject_reason(node, offer)
         if reason is not None:
             await self._send_control(node, Reject(offer.transfer_id, reason).encode())
             return
-        ask = self.ask_before_accepting
         message = self._file_message(
             direction="in",
             node=node,
             offer=offer,
             original_size=offer.size,
-            status=FileStatus.OFFERED if ask else FileStatus.RECEIVING,
+            status=FileStatus.RECEIVING,
         )
         transfer = Incoming(
             transfer_id=offer.transfer_id,
@@ -951,8 +938,8 @@ class MeshtasticFileTransfers:
         self._incoming[offer.transfer_id] = transfer
         self.chat.add_message(transfer.conversation, message)
         self._save()
-        if not ask:
-            await self._accept(transfer)
+        # nobody has to be watching: the gateway accepts every offer that passes the size and storage limits
+        await self._accept(transfer)
 
     async def _reject_reason(self, node: int, offer: Offer) -> RejectReason | None:
         if offer.version > chat_files.PROTOCOL_VERSION:
@@ -964,20 +951,6 @@ class MeshtasticFileTransfers:
         if await self._async_usage() + offer.size * (INFLATE_FACTOR if offer.deflate else 1) > self.storage_bytes:
             return RejectReason.STORAGE_FULL
         return None
-
-    async def async_accept(self, message_id: str, *, accept: bool) -> None:
-        """Answer an offer that waits for a user (option ``accept: ask``)."""
-        transfer = next((t for t in self._incoming.values() if t.message_id == message_id), None)
-        if transfer is None or transfer.accepted:
-            msg = "No file is waiting to be accepted for this message"
-            raise vol.Invalid(msg)
-        if accept:
-            await self._accept(transfer)
-        else:
-            self._incoming.pop(transfer.transfer_id, None)
-            self._update(transfer, FileStatus.REJECTED)
-            self._save()
-            await self._send_control(transfer.node, Reject(transfer.transfer_id, RejectReason.DECLINED).encode())
 
     async def _accept(self, transfer: Incoming) -> None:
         transfer.accepted = True

@@ -1116,10 +1116,7 @@ class MeshtasticChatPanel extends HTMLElement {
   async _fileAction(action, id) {
     const gateway = this._gateway();
     if (!gateway || !gateway.files) return;
-    const request =
-      action === "file-cancel"
-        ? { type: "meshtastic/chat/file/cancel", entry_id: gateway.entry_id, message_id: id }
-        : { type: "meshtastic/chat/file/accept", entry_id: gateway.entry_id, message_id: id, accept: action === "file-accept" };
+    const request = { type: "meshtastic/chat/file/cancel", entry_id: gateway.entry_id, message_id: id };
     const button = this._messagesEl.querySelector(`[data-action="${action}"][data-id="${id}"]`);
     if (button) button.disabled = true;
     try {
@@ -1172,10 +1169,7 @@ class MeshtasticChatPanel extends HTMLElement {
     }
 
     let actions = "";
-    if (m.status === "offered" && !outgoing) {
-      actions = `<button type="button" class="file-button primary" data-action="file-accept" data-id="${escapeHtml(m.id)}">Accept</button>
-        <button type="button" class="file-button" data-action="file-decline" data-id="${escapeHtml(m.id)}">Decline</button>`;
-    } else if (active) {
+    if (active) {
       actions = `<button type="button" class="file-button" data-action="file-cancel" data-id="${escapeHtml(m.id)}">Cancel</button>`;
     }
     if (actions) body += `<div class="file-actions">${actions}</div>`;
@@ -2195,7 +2189,7 @@ class MeshtasticChatPanel extends HTMLElement {
       if (reply) this._startReply(reply.dataset.id);
       const quote = ev.target.closest("[data-action=goto]");
       if (quote) this._flashMessage(quote.dataset.id);
-      const fileAction = ev.target.closest("[data-action=file-cancel], [data-action=file-accept], [data-action=file-decline]");
+      const fileAction = ev.target.closest("[data-action=file-cancel]");
       if (fileAction) this._fileAction(fileAction.dataset.action, fileAction.dataset.id);
     });
 

@@ -169,7 +169,6 @@ async def test_options_flow_enables_chat(hass: HomeAssistant) -> None:
         "channel_management": "off",
         "files_enable": False,
         "files_max_kb": 32,
-        "files_accept": "auto",
         "files_image_px": "320",
         "files_window": 1,
         "files_storage_mb": 50,
