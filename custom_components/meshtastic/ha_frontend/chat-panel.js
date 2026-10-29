@@ -1144,12 +1144,13 @@ class MeshtasticChatPanel extends HTMLElement {
 
     let body = "";
     if (showImage) {
-      body += `<a class="file-image" href="${escapeHtml(file.url)}" target="_blank" rel="noopener"><img src="${escapeHtml(
+      // the file view needs authentication, which a plain link or image cannot send: _signFileLinks swaps in a signed URL
+      body += `<a class="file-image" data-file-url="${escapeHtml(file.url)}" target="_blank" rel="noopener"><img data-file-src="${escapeHtml(
         file.url
-      )}" alt="${escapeHtml(file.name)}" loading="lazy"></a>`;
+      )}" alt="${escapeHtml(file.name)}"></a>`;
     }
     const nameHtml = link
-      ? `<a class="file-name" href="${escapeHtml(file.url)}" download="${escapeHtml(file.name)}" target="_blank" rel="noopener"><ha-icon icon="${
+      ? `<a class="file-name" data-file-url="${escapeHtml(file.url)}" download="${escapeHtml(file.name)}" target="_blank" rel="noopener"><ha-icon icon="${
           file.image ? "mdi:image-outline" : "mdi:file-outline"
         }"></ha-icon>${escapeHtml(file.name)}</a>`
       : `<span class="file-name"><ha-icon icon="${file.image ? "mdi:image-outline" : "mdi:file-outline"}"></ha-icon>${escapeHtml(file.name)}</span>`;
@@ -2540,6 +2541,32 @@ class MeshtasticChatPanel extends HTMLElement {
 
     scroller.innerHTML = html;
     if (stickToBottom || atBottom) scroller.scrollTop = scroller.scrollHeight;
+    this._signFileLinks(scroller);
+  }
+
+  // a signed URL for a file of the chat, valid for an hour and reused while it is
+  async _signedFileUrl(path) {
+    this._signed = this._signed || new Map();
+    const cached = this._signed.get(path);
+    if (cached && cached.until > Date.now()) return cached.url;
+    const result = await this._hass.callWS({ type: "auth/sign_path", path, expires: 3600 });
+    this._signed.set(path, { url: result.path, until: Date.now() + 3000 * 1000 });
+    return result.path;
+  }
+
+  _signFileLinks(root) {
+    for (const el of root.querySelectorAll("[data-file-url], img[data-file-src]")) {
+      const image = el.tagName === "IMG";
+      const path = image ? el.dataset.fileSrc : el.dataset.fileUrl;
+      this._signedFileUrl(path).then(
+        (url) => {
+          if (!el.isConnected) return;
+          if (image) el.src = url;
+          else el.href = url;
+        },
+        () => {}
+      );
+    }
   }
 
   // the quoted message of a reply: who said what, kept with the reply; clicking it jumps to the original
