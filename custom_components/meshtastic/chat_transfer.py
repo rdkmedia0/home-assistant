@@ -673,10 +673,22 @@ class MeshtasticFileTransfers:
 
     async def _offer(self, transfer: Outgoing) -> None:
         self._update(transfer, FileStatus.OFFERING, note=None)
-        await self._send_reliable(transfer, transfer.prepared.offer.encode())
+        offer = transfer.prepared.offer
+        _LOGGER.debug(
+            "Offering %s (%s, %d bytes, %d chunks) to %08x as transfer %08x",
+            offer.name,
+            offer.mime,
+            offer.size,
+            offer.chunk_count,
+            transfer.node,
+            transfer.transfer_id,
+        )
+        await self._send_reliable(transfer, offer.encode())
+        _LOGGER.debug("Offer %08x left the radio, waiting for the answer of %08x", transfer.transfer_id, transfer.node)
         try:
             await asyncio.wait_for(transfer.answered.wait(), self.timing.offer_timeout)
         except TimeoutError:
+            _LOGGER.debug("Offer %08x was not answered by %08x", transfer.transfer_id, transfer.node)
             msg = "No Mesh Chat with file transfer answered at this node"
             raise TransferError(msg) from None
         self._raise_if_cancelled(transfer)
@@ -851,6 +863,9 @@ class MeshtasticFileTransfers:
         try:
             kind = chat_files.packet_type(payload)
             transfer_id = chat_files.transfer_id_of(payload)
+            _LOGGER.debug(
+                "File transfer packet %s of %08x from %08x, %d bytes", kind, transfer_id, node.id, len(payload)
+            )
             if kind == chat_files.PacketType.OFFER:
                 await self._on_offer(node.id, Offer.decode(payload))
             elif kind == chat_files.PacketType.ACCEPT:

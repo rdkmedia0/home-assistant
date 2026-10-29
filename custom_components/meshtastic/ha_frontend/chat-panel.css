@@ -678,6 +678,7 @@ a.chip-button { text-decoration: none; color: inherit; }
   --mdc-icon-size: 18px;
 }
 .row:hover .reply-button, .reply-button:focus-visible { opacity: 1; }
+.delete-button:hover { color: var(--error-color, #db4437); }
 .reply-button:hover { background: var(--secondary-background-color); }
 @media (hover: none) { .reply-button { opacity: 0.6; } }
 .quote {

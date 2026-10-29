@@ -732,6 +732,32 @@ class MeshtasticChatPanel extends HTMLElement {
 
     const message = update.message;
     const cached = this._messages.get(key);
+
+    if (update.kind === "deleted") {
+      if (cached) {
+        const index = cached.findIndex((m) => m.id === message.id);
+        if (index >= 0) cached.splice(index, 1);
+      }
+      if (gateway) {
+        const summary = gateway.conversations[update.conversation];
+        const last = cached && cached[cached.length - 1];
+        if (summary && last) {
+          gateway.conversations[update.conversation] = {
+            ts: last.ts,
+            text: last.text,
+            direction: last.direction,
+            from_short: last.from_short,
+            count: Math.max(0, summary.count - 1),
+          };
+        } else if (summary && cached && !cached.length) {
+          delete gateway.conversations[update.conversation];
+        }
+      }
+      this._renderList();
+      if (update.entry_id === this._entryId && update.conversation === this._conversation) this._renderMessages();
+      return;
+    }
+
     if (cached) {
       const index = cached.findIndex((m) => m.id === message.id);
       if (index >= 0) cached[index] = message;
@@ -756,7 +782,8 @@ class MeshtasticChatPanel extends HTMLElement {
     const isOpen = update.entry_id === this._entryId && update.conversation === this._conversation;
     if (isOpen && this._isThreadVisible()) this._markRead();
     this._renderList();
-    if (isOpen) this._renderMessages({ stickToBottom: true });
+    // only a new message scrolls to the bottom; a status or progress update leaves the view where the user put it
+    if (isOpen) this._renderMessages({ stickToBottom: update.kind === "message" });
   }
 
   async _loadHistory(entryId, conversation, before) {
@@ -1268,6 +1295,20 @@ class MeshtasticChatPanel extends HTMLElement {
     }
     try {
       await this._hass.callWS({ type: "meshtastic/chat/clear", entry_id: gateway.entry_id, conversation: this._conversation });
+    } catch (err) {
+      this._showError(errorText(err));
+    }
+  }
+
+  async _deleteMessage(id) {
+    const gateway = this._gateway();
+    if (!gateway || !this._conversation) return;
+    const message = (this._messages.get(`${this._entryId}|${this._conversation}`) || []).find((m) => m.id === id);
+    const what = message && message.kind === "file" ? "this file" : "this message";
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(`Delete ${what} from the history in Home Assistant? Messages on devices are not affected.`)) return;
+    try {
+      await this._hass.callWS({ type: "meshtastic/chat/delete", entry_id: gateway.entry_id, conversation: this._conversation, message_id: id });
     } catch (err) {
       this._showError(errorText(err));
     }
@@ -2189,6 +2230,8 @@ class MeshtasticChatPanel extends HTMLElement {
       if (reply) this._startReply(reply.dataset.id);
       const quote = ev.target.closest("[data-action=goto]");
       if (quote) this._flashMessage(quote.dataset.id);
+      const remove = ev.target.closest("[data-action=delete]");
+      if (remove) this._deleteMessage(remove.dataset.id);
       const fileAction = ev.target.closest("[data-action=file-cancel]");
       if (fileAction) this._fileAction(fileAction.dataset.action, fileAction.dataset.id);
     });
@@ -2461,6 +2504,7 @@ class MeshtasticChatPanel extends HTMLElement {
     const messages = this._messages.get(key);
     const scroller = this._messagesEl;
     const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
+    const previousTop = scroller.scrollTop;
 
     if (!messages) {
       scroller.innerHTML = `<p class="empty center">Loading…</p>`;
@@ -2511,6 +2555,10 @@ class MeshtasticChatPanel extends HTMLElement {
           ? `<button class="reply-button" data-action="reply" data-id="${escapeHtml(m.id)}" aria-label="Reply" title="Reply"><ha-icon icon="mdi:reply"></ha-icon></button>`
           : "";
 
+      const deleteButton = `<button class="reply-button delete-button" data-action="delete" data-id="${escapeHtml(
+        m.id
+      )}" aria-label="Delete" title="Delete this entry"><ha-icon icon="mdi:delete-outline"></ha-icon></button>`;
+
       const isFile = m.kind === "file";
       if (isFile && !outgoing && m.status !== "received") {
         // the state of an incoming file matters as much as of a sent one
@@ -2522,20 +2570,21 @@ class MeshtasticChatPanel extends HTMLElement {
       html += `
         <div class="row ${outgoing ? "out" : "in"} ${continued ? "continued" : ""}" data-message="${escapeHtml(m.id)}">
           ${!outgoing ? (continued ? '<span class="avatar spacer"></span>' : this._avatar(m.from, m.from_short)) : ""}
-          ${outgoing ? replyButton : ""}
+          ${outgoing ? deleteButton + replyButton : ""}
           <div class="bubble ${m.status === "failed" ? "failed" : ""} ${isFile ? "has-file" : ""}">
             ${author}
             ${this._quoteHtml(m, gateway)}
             ${content}
             <div class="footer">${sentBy}${signal}${footer}</div>
           </div>
-          ${!outgoing ? replyButton : ""}
+          ${!outgoing ? replyButton + deleteButton : ""}
         </div>`;
     }
 
     scroller.innerHTML = html;
-    if (stickToBottom || atBottom) scroller.scrollTop = scroller.scrollHeight;
-    this._signFileLinks(scroller);
+    // replacing the content resets the scroll position: put the view back where the user had it
+    scroller.scrollTop = stickToBottom || atBottom ? scroller.scrollHeight : previousTop;
+    this._signFileLinks(scroller, stickToBottom || atBottom);
   }
 
   // a signed URL for a file of the chat, valid for an hour and reused while it is
@@ -2548,15 +2597,18 @@ class MeshtasticChatPanel extends HTMLElement {
     return result.path;
   }
 
-  _signFileLinks(root) {
+  _signFileLinks(root, keepAtBottom) {
     for (const el of root.querySelectorAll("[data-file-url], img[data-file-src]")) {
       const image = el.tagName === "IMG";
       const path = image ? el.dataset.fileSrc : el.dataset.fileUrl;
       this._signedFileUrl(path).then(
         (url) => {
           if (!el.isConnected) return;
-          if (image) el.src = url;
-          else el.href = url;
+          if (image) {
+            // a thumbnail that loads late makes the thread taller: stay at the bottom if that is where the user is
+            if (keepAtBottom) el.addEventListener("load", () => (root.scrollTop = root.scrollHeight), { once: true });
+            el.src = url;
+          } else el.href = url;
         },
         () => {}
       );

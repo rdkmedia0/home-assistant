@@ -563,6 +563,41 @@ async def test_websocket_file_commands(hass: HomeAssistant, mesh: FakeMesh, hass
     await async_unload_chat(hass, plain)
 
 
+async def test_delete_one_message_removes_its_file(hass: HomeAssistant, mesh: FakeMesh, hass_ws_client) -> None:
+    a, b = await _two_gateways(hass, mesh)
+    ws = await hass_ws_client(hass)
+    message = await a.files.async_send(A_TO_B, PHOTO, name="photo.jpg", mime="image/jpeg")
+    await _wait_status(a, A_TO_B, message["id"], FileStatus.DELIVERED, FileStatus.FAILED)
+    path = Path(a.message(A_TO_B, message["id"])["file"]["path"])
+    assert path.is_file()
+    a.chat.add_message(A_TO_B, {**a.message(A_TO_B, message["id"]), "id": "keep", "kind": "text", "text": "hi"})
+
+    await ws.send_json(
+        {
+            "id": 1,
+            "type": "meshtastic/chat/delete",
+            "entry_id": a.entry.entry_id,
+            "conversation": A_TO_B,
+            "message_id": message["id"],
+        }
+    )
+    assert (await ws.receive_json())["success"]
+    assert a.chat.find_message(A_TO_B, message_id=message["id"]) is None
+    assert a.chat.find_message(A_TO_B, message_id="keep") is not None
+    await until(lambda: not path.is_file())
+
+    await ws.send_json(
+        {
+            "id": 2,
+            "type": "meshtastic/chat/delete",
+            "entry_id": a.entry.entry_id,
+            "conversation": A_TO_B,
+            "message_id": message["id"],
+        }
+    )
+    assert (await ws.receive_json())["error"]["code"] == "not_found"
+
+
 def test_helpers() -> None:
     assert safe_file_name("C:\\Users\\me\\My Photo (1).JPG") == "My_Photo_1_.JPG"
     assert safe_file_name("../../.hidden") == "hidden"

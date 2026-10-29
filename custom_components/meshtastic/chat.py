@@ -491,6 +491,19 @@ class MeshtasticChat:
                 {"entry_id": self.entry.entry_id, "kind": "cleared", "conversation": conversation, "message": None},
             )
 
+    def delete_message(self, conversation: str, message_id: str) -> bool:
+        """Remove one message from the stored history (its file and running transfer go with it)."""
+        messages = self._conversations.get(conversation, [])
+        for index, message in enumerate(messages):
+            if message["id"] != message_id:
+                continue
+            del messages[index]
+            if self.files is not None:
+                self.files.async_discard_messages([message])
+            self._publish("deleted", conversation, message)
+            return True
+        return False
+
     def summaries(self) -> dict[str, dict[str, Any]]:
         result = {}
         for conversation, messages in self._conversations.items():
@@ -1131,6 +1144,7 @@ def _async_register_websocket_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_chat_history)
     websocket_api.async_register_command(hass, websocket_chat_send)
     websocket_api.async_register_command(hass, websocket_chat_clear)
+    websocket_api.async_register_command(hass, websocket_chat_delete)
     websocket_api.async_register_command(hass, websocket_chat_subscribe)
     websocket_api.async_register_command(hass, websocket_chat_node)
     websocket_api.async_register_command(hass, websocket_chat_node_request)
@@ -1239,6 +1253,25 @@ def websocket_chat_clear(hass: HomeAssistant, connection: websocket_api.ActiveCo
     if (chat := _get_chat(hass, connection, msg)) is None:
         return
     chat.clear(msg["conversation"])
+    connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "meshtastic/chat/delete",
+        vol.Required("entry_id"): str,
+        vol.Required("conversation"): str,
+        vol.Required("message_id"): str,
+    }
+)
+@websocket_api.require_admin
+@callback
+def websocket_chat_delete(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    if (chat := _get_chat(hass, connection, msg)) is None:
+        return
+    if not chat.delete_message(msg["conversation"], msg["message_id"]):
+        connection.send_error(msg["id"], websocket_api.ERR_NOT_FOUND, "The message does not exist")
+        return
     connection.send_result(msg["id"])
 
 
