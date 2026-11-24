@@ -365,6 +365,7 @@ textarea {
   background: var(--secondary-background-color);
   font-size: 13px;
 }
+.attach-bar[hidden] { display: none; }
 .attach-thumb { width: 48px; height: 48px; object-fit: cover; border-radius: 8px; flex-shrink: 0; }
 .attach-icon { --mdc-icon-size: 32px; color: var(--secondary-text-color); flex-shrink: 0; }
 .attach-text { flex: 1; min-width: 0; }
