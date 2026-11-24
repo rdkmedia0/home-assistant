@@ -1015,9 +1015,12 @@ class MeshtasticChatPanel extends HTMLElement {
     let mime = file.type || "";
     let name = file.name || "file";
     let preview = null;
+    let source = null;
+    const maxPx = files.image_max_px || 320;
     try {
       if (mime.startsWith("image/")) {
-        const reduced = await this._reduceImage(file, files.image_max_px || 320);
+        const reduced = await this._reduceImage(file, maxPx);
+        source = file;
         bytes = reduced.bytes;
         mime = reduced.mime;
         preview = reduced.url;
@@ -1037,9 +1040,35 @@ class MeshtasticChatPanel extends HTMLElement {
       this._showError("The file is empty.");
       return;
     }
-    this._attachment = { entryId: gateway.entry_id, conversation: this._conversation, name, mime, bytes, preview, hops: info.hops_away || 0 };
+    this._attachment = {
+      entryId: gateway.entry_id,
+      conversation: this._conversation,
+      name,
+      mime,
+      bytes,
+      preview,
+      source,
+      maxPx,
+      hops: info.hops_away || 0,
+    };
     this._renderAttachment();
     this._updateComposer();
+  }
+
+  // the sender picks how big a photo goes out: the original is encoded again at the chosen size
+  async _resizeAttachment(maxPx) {
+    const attachment = this._attachment;
+    if (!attachment || !attachment.source || this._sending || !maxPx || maxPx === attachment.maxPx) return;
+    try {
+      const reduced = await this._reduceImage(attachment.source, maxPx);
+      if (this._attachment !== attachment) return;
+      attachment.bytes = reduced.bytes;
+      attachment.preview = reduced.url;
+      attachment.maxPx = maxPx;
+    } catch (err) {
+      this._showError(`Could not resize the photo: ${errorText(err)}`);
+    }
+    this._renderAttachment();
   }
 
   // draw the photo smaller onto a canvas and re-encode it as JPEG: a phone photo becomes a few kB
@@ -1090,12 +1119,24 @@ class MeshtasticChatPanel extends HTMLElement {
         } packet${estimate.chunks === 1 ? "" : "s"} · about ${formatTransferTime(estimate.seconds)} on ${escapeHtml(
           presetName(files.preset)
         )}${hops}</div>
+        ${this._sizePicker(attachment, files)}
       </div>
       <button type="button" class="attach-send" data-action="send-file" ${this._sending ? "disabled" : ""}>Send</button>
       <button type="button" class="icon-button" data-action="cancel-attach" aria-label="Remove the file" title="Remove the file">
         <ha-icon icon="mdi:close"></ha-icon>
       </button>`;
     el.hidden = false;
+  }
+
+  // photos only: a smaller picture is fewer packets. The gateway's photo size is the ceiling.
+  _sizePicker(attachment, files) {
+    if (!attachment.source) return "";
+    const ceiling = files.image_max_px || 320;
+    const sizes = [...new Set([64, 96, 160, 240, 320, 480, 640].filter((px) => px < ceiling).concat(ceiling))].sort((a, b) => a - b);
+    const options = sizes
+      .map((px) => `<option value="${px}" ${px === attachment.maxPx ? "selected" : ""}>${px} px${px === ceiling ? " (largest)" : ""}</option>`)
+      .join("");
+    return `<label class="attach-size">Photo size <select class="attach-size-select" ${this._sending ? "disabled" : ""}>${options}</select></label>`;
   }
 
   _cancelAttachment() {
@@ -2260,6 +2301,9 @@ class MeshtasticChatPanel extends HTMLElement {
       if (!action) return;
       if (action.dataset.action === "send-file") this._sendAttachment();
       else if (action.dataset.action === "cancel-attach") this._cancelAttachment();
+    });
+    this._attachEl.addEventListener("change", (ev) => {
+      if (ev.target.classList.contains("attach-size-select")) this._resizeAttachment(Number(ev.target.value));
     });
     // keep the focus (and the cursor) in the message while an emoji is picked
     this._emojiEl.addEventListener("mousedown", (ev) => ev.preventDefault());
