@@ -14,11 +14,13 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
+import voluptuous as vol
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_capture_events
 
 from custom_components.meshtastic import chat_files
 from custom_components.meshtastic.aiomeshtastic.interface import MeshNode
+from custom_components.meshtastic.api import MeshtasticApiClientCommunicationError
 from custom_components.meshtastic.chat import async_setup_chat, async_unload_chat
 from custom_components.meshtastic.chat_files import Data, PacketType
 from custom_components.meshtastic.chat_transfer import (
@@ -56,6 +58,8 @@ FAST = Timing(
     done_timeout=0.5,
     link_retry_delay=0.01,
     link_retries=3,
+    connection_retry_delay=0.01,
+    connection_retries=3,
     ack_misses=3,
     duty_cycle_backoff=(0.01,),
     chunk_gap_factor=0,
@@ -106,6 +110,7 @@ class MeshFakeClient(FakeClient):
         self.mesh = mesh
         self.listeners: list[Any] = []
         self.data_sent: list[tuple[int, bytes]] = []
+        self.connection_drops = 0  # sends that fail because the connection to the radio dropped
         mesh.clients[node_id] = self
 
     def add_data_listener(self, port_num: int, callback: Any) -> Callable[[], None]:  # noqa: ARG002
@@ -123,6 +128,10 @@ class MeshFakeClient(FakeClient):
         packet_id: int | None = None,  # noqa: ARG002
     ) -> tuple[int | None, str | None]:
         self.data_sent.append((destination_id, bytes(payload)))
+        if self.connection_drops:
+            self.connection_drops -= 1
+            msg = "Connection interrupted"
+            raise MeshtasticApiClientCommunicationError(msg)
         return await self.mesh.deliver(self.node_id, destination_id, payload)
 
     def chunks_sent(self) -> list[int]:
@@ -318,6 +327,47 @@ async def test_duty_cycle_and_link_errors_are_retried(hass: HomeAssistant, mesh:
     offers = [p for _, p in a.client.data_sent if chat_files.packet_type(p) == PacketType.OFFER]
     assert len(offers) == 4
     assert b.file_message(B_TO_A)["file"]["image"] is True
+
+
+async def test_a_dropped_radio_connection_is_waited_out(hass: HomeAssistant, mesh: FakeMesh) -> None:
+    a, b = await _two_gateways(hass, mesh)
+    a.client.connection_drops = 3  # the connection comes back before the retries run out
+
+    message = await a.files.async_send(A_TO_B, PHOTO, name="photo.jpg", mime="image/jpeg")
+    done = await _wait_status(a, A_TO_B, message["id"], FileStatus.DELIVERED, FileStatus.FAILED)
+    assert done["status"] == FileStatus.DELIVERED, done["file"]
+    assert b.file_message(B_TO_A)["file"]["image"] is True
+
+
+async def test_a_radio_connection_that_stays_down_fails_the_transfer(hass: HomeAssistant, mesh: FakeMesh) -> None:
+    a, _ = await _two_gateways(hass, mesh)
+    a.client.connection_drops = 100
+
+    message = await a.files.async_send(A_TO_B, PHOTO, name="photo.jpg")
+    done = await _wait_status(a, A_TO_B, message["id"], FileStatus.DELIVERED, FileStatus.FAILED)
+    assert done["status"] == FileStatus.FAILED
+    assert done["file"]["error"] == "Connection interrupted"
+
+
+async def test_a_failed_file_can_be_resumed_by_the_user(hass: HomeAssistant, mesh: FakeMesh) -> None:
+    a, b = await _two_gateways(hass, mesh)
+    a.client.connection_drops = 100
+
+    message = await a.files.async_send(A_TO_B, PHOTO, name="photo.jpg", mime="image/jpeg")
+    failed = await _wait_status(a, A_TO_B, message["id"], FileStatus.DELIVERED, FileStatus.FAILED)
+    assert failed["status"] == FileStatus.FAILED
+
+    a.client.connection_drops = 0  # the radio is back
+    await a.files.async_resume(message["id"])
+    done = await _wait_status(a, A_TO_B, message["id"], FileStatus.DELIVERED, FileStatus.FAILED)
+    assert done["status"] == FileStatus.DELIVERED, done["file"]
+    assert done["file"]["error"] is None
+    assert b.file_message(B_TO_A)["file"]["image"] is True
+
+    with pytest.raises(vol.Invalid, match="cannot be sent again"):
+        await a.files.async_resume(message["id"])  # delivered files are not offered again
+    with pytest.raises(vol.Invalid, match="cannot be sent again"):
+        await a.files.async_resume("no-such-message")
 
 
 async def test_persistent_link_error_fails_the_transfer(hass: HomeAssistant, mesh: FakeMesh) -> None:

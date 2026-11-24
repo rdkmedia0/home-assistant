@@ -1188,7 +1188,8 @@ class MeshtasticChatPanel extends HTMLElement {
   async _fileAction(action, id) {
     const gateway = this._gateway();
     if (!gateway || !gateway.files) return;
-    const request = { type: "meshtastic/chat/file/cancel", entry_id: gateway.entry_id, message_id: id };
+    const type = action === "file-resume" ? "meshtastic/chat/file/resume" : "meshtastic/chat/file/cancel";
+    const request = { type, entry_id: gateway.entry_id, message_id: id };
     const button = this._messagesEl.querySelector(`[data-action="${action}"][data-id="${id}"]`);
     if (button) button.disabled = true;
     try {
@@ -1254,6 +1255,13 @@ class MeshtasticChatPanel extends HTMLElement {
     let actions = "";
     if (active) {
       actions = `<button type="button" class="file-button" data-action="file-cancel" data-id="${escapeHtml(m.id)}">Cancel</button>`;
+    }
+    // a file that did not arrive stays on the gateway: the sender can offer it again and carry on where it stopped
+    if (outgoing && file.url && ["failed", "cancelled", "rejected"].includes(m.status)) {
+      const resumable = sent > 0 && sent < total;
+      actions = `<button type="button" class="file-button" data-action="file-resume" data-id="${escapeHtml(m.id)}">${
+        resumable ? "Resume" : "Try again"
+      }</button>`;
     }
     if (actions) body += `<div class="file-actions">${actions}</div>`;
     return `<div class="file">${body}</div>`;
@@ -2288,7 +2296,7 @@ class MeshtasticChatPanel extends HTMLElement {
       if (quote) this._flashMessage(quote.dataset.id);
       const remove = ev.target.closest("[data-action=delete]");
       if (remove) this._deleteMessage(remove.dataset.id);
-      const fileAction = ev.target.closest("[data-action=file-cancel]");
+      const fileAction = ev.target.closest("[data-action=file-cancel], [data-action=file-resume]");
       if (fileAction) this._fileAction(fileAction.dataset.action, fileAction.dataset.id);
     });
 

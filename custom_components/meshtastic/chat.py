@@ -1203,6 +1203,7 @@ def _async_register_websocket_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_chat_map)
     websocket_api.async_register_command(hass, websocket_chat_file_send)
     websocket_api.async_register_command(hass, websocket_chat_file_cancel)
+    websocket_api.async_register_command(hass, websocket_chat_file_resume)
 
 
 @websocket_api.websocket_command({vol.Required("type"): "meshtastic/chat/gateways"})
@@ -1563,6 +1564,27 @@ async def websocket_chat_file_cancel(
         return
     try:
         await files.async_cancel(msg["message_id"])
+    except vol.Invalid as e:
+        connection.send_error(msg["id"], websocket_api.ERR_INVALID_FORMAT, str(e))
+        return
+    connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "meshtastic/chat/file/resume",
+        vol.Required("entry_id"): str,
+        vol.Required("message_id"): str,
+    }
+)
+@websocket_api.async_response
+async def websocket_chat_file_resume(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    if (files := _get_files(hass, connection, msg)) is None:
+        return
+    try:
+        await files.async_resume(msg["message_id"])
     except vol.Invalid as e:
         connection.send_error(msg["id"], websocket_api.ERR_INVALID_FORMAT, str(e))
         return

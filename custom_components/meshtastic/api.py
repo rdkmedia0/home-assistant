@@ -32,6 +32,7 @@ from .aiomeshtastic import (
 from .aiomeshtastic import (
     TcpConnection as AioTcpConnection,
 )
+from .aiomeshtastic.connection.errors import ClientApiConnectionError
 from .aiomeshtastic.errors import MeshRoutingError, MeshtasticError
 from .aiomeshtastic.protobuf import apponly_pb2, channel_pb2, mesh_pb2, portnums_pb2
 from .const import (
@@ -428,6 +429,9 @@ class MeshtasticApiClient:
             ack_packet = await asyncio.wait_for(send, timeout=ack_timeout)
         except TimeoutError:
             return None, None
+        except ClientApiConnectionError as e:
+            # the link to the radio dropped: callers can wait for the reconnect instead of giving up
+            raise MeshtasticApiClientCommunicationError(str(e)) from e
         except Exception as e:
             raise MeshtasticApiClientError(str(e)) from e
 

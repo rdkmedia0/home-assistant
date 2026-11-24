@@ -36,7 +36,7 @@ from homeassistant.util.hass_dict import HassKey
 
 from . import chat_files
 from .aiomeshtastic.errors import ROUTING_ERROR_HINTS
-from .api import MeshtasticApiClientError
+from .api import MeshtasticApiClientCommunicationError, MeshtasticApiClientError
 from .chat_files import (
     FILE_TRANSFER_PORT,
     MAX_WINDOW,
@@ -143,6 +143,7 @@ class FileStatus(StrEnum):
     REJECTED = "rejected"
 
 
+RESUMABLE_STATUSES = frozenset({FileStatus.FAILED, FileStatus.CANCELLED, FileStatus.REJECTED})
 FINAL_STATUSES = frozenset(
     {FileStatus.DELIVERED, FileStatus.RECEIVED, FileStatus.FAILED, FileStatus.CANCELLED, FileStatus.REJECTED}
 )
@@ -159,6 +160,8 @@ class Timing:
     done_timeout: float = 30
     link_retry_delay: float = 15
     link_retries: int = 5
+    connection_retry_delay: float = 20  # the radio's connection dropped: how long to wait for the reconnect
+    connection_retries: int = 12  # about four minutes in all
     ack_misses: int = 5
     duty_cycle_backoff: tuple[float, ...] = (60, 120, 300, 600)
     chunk_gap_factor: float = CHUNK_GAP_FACTOR
@@ -790,6 +793,7 @@ class MeshtasticFileTransfers:
         client = self.entry.runtime_data.client
         timeout = self.timing.routing_ack_timeout + self.timing.per_hop * transfer.hops
         link_attempts = 0
+        connection_attempts = 0
         duty_cycle_waits = 0
         while True:
             transfer.touch()
@@ -797,6 +801,16 @@ class MeshtasticFileTransfers:
                 _, error = await client.send_data_with_ack(
                     payload, transfer.node, port_num=FILE_TRANSFER_PORT, ack_timeout=timeout
                 )
+            except MeshtasticApiClientCommunicationError as e:
+                # the connection to the radio dropped (Wi-Fi, a restart): it reconnects by itself, so wait for it
+                connection_attempts += 1
+                if connection_attempts > self.timing.connection_retries:
+                    raise TransferError(str(e)) from e
+                self._raise_if_cancelled(transfer)
+                waiting = f"{connection_attempts}/{self.timing.connection_retries}"
+                self._update(transfer, note=f"lost the connection to the radio, waiting for it ({waiting})")
+                await asyncio.sleep(self.timing.connection_retry_delay)
+                continue
             except MeshtasticApiClientError as e:
                 raise TransferError(str(e)) from e
             if error == "NONE":
@@ -869,6 +883,37 @@ class MeshtasticFileTransfers:
                 return
         msg = "No transfer is running for this message"
         raise vol.Invalid(msg)
+
+    async def async_resume(self, message_id: str) -> None:
+        """Offer a file that did not arrive again; the other side tells which chunks it still holds."""
+        message = next((m for m in self.chat.file_messages() if m["id"] == message_id), None)
+        if message is None or message["direction"] != "out" or message["status"] not in RESUMABLE_STATUSES:
+            msg = "This file cannot be sent again"
+            raise vol.Invalid(msg)
+        file = message["file"]
+        node = int(message["to"])
+        if any(t.node == node for t in self._outgoing.values()):
+            msg = "A file is already being sent to this node"
+            raise vol.Invalid(msg)
+        try:
+            await self._restore_outgoing(
+                {
+                    "transfer_id": file["transfer_id"],
+                    "conversation": self.chat.node_conversation(node),
+                    "message_id": message["id"],
+                    "node": node,
+                    "path": file["path"],
+                    "name": file["name"],
+                    "mime": file.get("mime", ""),
+                }
+            )
+        except (ProtocolError, KeyError, ValueError, OSError) as e:
+            msg = "The file is no longer stored on this gateway"
+            raise vol.Invalid(msg) from e
+        transfer = self._outgoing[int(file["transfer_id"])]
+        self._update(transfer, FileStatus.OFFERING, error=None, note=None)
+        self._save()
+        self._start(transfer)
 
     # --- receiving -----------------------------------------------------------------------------------------------
 
