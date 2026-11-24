@@ -625,13 +625,14 @@ own Map panel and automations know as well; the chat map does not need them.
 
 ### Files
 
-<p align="center"><img src="docs/mesh-chat/files.png" width="800" alt="A direct message conversation with a received photo, a file being sent with a progress bar, an incoming file waiting to be accepted, and a photo attached to the composer with the estimated transfer time"></p>
+<p align="center"><img src="docs/mesh-chat/files.png" width="800" alt="A direct message conversation with a received photo, a file being sent with a progress bar, and a photo attached to the composer with the estimated transfer time"></p>
 
 With **File transfer between Mesh Chat gateways** enabled (off by default), the composer of a direct message gets a
 paperclip. The file goes to the node of that conversation in chunks of 200 bytes, each sent as a direct message
 with the mesh's acknowledgement, and each confirmed by the other side's Home Assistant before the next one is sent.
 A lost chunk or acknowledgement is repeated, a restart of either Home Assistant resumes where it stopped, and the
-finished file is checked against its SHA-256. The file then appears in the conversation on both sides: images with
+finished file is checked against its SHA-256. The receiving gateway accepts every offer that passes its size and
+storage limits; nobody has to be watching. The file then appears in the conversation on both sides: images with
 a thumbnail, everything else with a download link. Files are kept with the chat history under
 `.storage/meshtastic.files/<entry id>` and removed with their messages.
 
@@ -643,11 +644,15 @@ What to expect from the mesh, which is the limit here, not the code:
 - **Small files.** One full packet is on air for about 2.2 s on LongFast, so a 32 kB file (160 packets) takes
   roughly 12 minutes over one hop in a region without a duty cycle, and about two hours where the 10 % duty cycle
   applies (EU 868). MediumFast is about three times faster, ShortFast ten times. Every hop multiplies the airtime.
-  The panel shows the estimate before you send; photos are reduced in the browser to 320 px (option) so a phone
-  picture becomes 10 to 25 kB.
-- **The radio decides the pace.** A chunk waits while the gateway's channel is more than 25 % busy, backs off when
-  the firmware reports its duty cycle limit, and gives up after a few failed retries or when the other side stops
-  answering. The reason is shown under the progress bar.
+  The panel shows the estimate before you send and replaces it with the measured pace once chunks are
+  travelling. Photos are reduced in the browser to at most 320 px (option); the sender can pick a smaller size
+  before sending, so a phone picture becomes a few to 25 kB.
+- **The radio decides the pace.** A chunk waits while the gateway's channel is busier than the limit (25 % by
+  default, an option), backs off when the firmware reports its duty cycle limit, waits for a dropped connection
+  to the radio to come back, and gives up after a few failed retries or when the other side stops answering. The
+  reason is shown under the progress bar.
+- **Resume.** A file that did not arrive stays on the gateway. The sender gets a **Resume** button (**Try
+  again** if nothing had been sent), and the other side reports which chunks it already holds.
 
 ### Options
 
