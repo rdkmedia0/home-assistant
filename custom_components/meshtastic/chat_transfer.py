@@ -60,6 +60,7 @@ from .const import (
     CHAT_FILES_URL,
     CHAT_STORAGE_SAVE_DELAY,
     CONF_OPTION_CHAT,
+    CONF_OPTION_CHAT_FILES_BUSY,
     CONF_OPTION_CHAT_FILES_ENABLE,
     CONF_OPTION_CHAT_FILES_ENABLE_DEFAULT,
     CONF_OPTION_CHAT_FILES_IMAGE_PX,
@@ -301,6 +302,11 @@ class MeshtasticFileTransfers:
                 int(file_options(self.entry).get(CONF_OPTION_CHAT_FILES_WINDOW, CONF_OPTION_CHAT_FILES_WINDOW_DEFAULT)),
             ),
         )
+
+    @property
+    def busy_limit(self) -> float:
+        """The channel utilization in percent above which the sender holds back its chunks."""
+        return float(file_options(self.entry).get(CONF_OPTION_CHAT_FILES_BUSY, self.timing.utilization_limit))
 
     @property
     def image_max_px(self) -> int:
@@ -773,7 +779,7 @@ class MeshtasticFileTransfers:
         if gap > 0:
             await asyncio.sleep(gap)
         waited = 0.0
-        while (utilization := self._channel_utilization()) is not None and utilization > self.timing.utilization_limit:
+        while (utilization := self._channel_utilization()) is not None and utilization > self.busy_limit:
             if waited >= self.timing.utilization_max_wait:
                 break
             self._update(transfer, note=f"waiting, the channel is {utilization:.0f}% busy")

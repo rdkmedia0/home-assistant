@@ -181,6 +181,7 @@ async def test_options_flow_enables_chat(hass: HomeAssistant) -> None:
         "files_max_kb": 32,
         "files_image_px": "320",
         "files_window": 1,
+        "files_busy_percent": 25,
         "files_storage_mb": 50,
     }
     assert entry.entry_id in hass.data[DATA_CHAT]

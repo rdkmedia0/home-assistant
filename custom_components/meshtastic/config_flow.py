@@ -40,6 +40,10 @@ from .const import (
     CONF_OPTION_CHAT_CHANNEL_MANAGEMENT_OFF,
     CONF_OPTION_CHAT_ENABLE,
     CONF_OPTION_CHAT_ENABLE_DEFAULT,
+    CONF_OPTION_CHAT_FILES_BUSY,
+    CONF_OPTION_CHAT_FILES_BUSY_DEFAULT,
+    CONF_OPTION_CHAT_FILES_BUSY_MAX,
+    CONF_OPTION_CHAT_FILES_BUSY_MIN,
     CONF_OPTION_CHAT_FILES_ENABLE,
     CONF_OPTION_CHAT_FILES_ENABLE_DEFAULT,
     CONF_OPTION_CHAT_FILES_IMAGE_PX,
@@ -299,6 +303,13 @@ def _build_chat_schema(
                 CONF_OPTION_CHAT_FILES_WINDOW,
                 default=options.get(CONF_OPTION_CHAT_FILES_WINDOW, CONF_OPTION_CHAT_FILES_WINDOW_DEFAULT),
             ): vol.All(vol.Coerce(int), vol.Range(min=1, max=CONF_OPTION_CHAT_FILES_WINDOW_MAX)),
+            vol.Required(
+                CONF_OPTION_CHAT_FILES_BUSY,
+                default=options.get(CONF_OPTION_CHAT_FILES_BUSY, CONF_OPTION_CHAT_FILES_BUSY_DEFAULT),
+            ): vol.All(
+                vol.Coerce(int),
+                vol.Range(min=CONF_OPTION_CHAT_FILES_BUSY_MIN, max=CONF_OPTION_CHAT_FILES_BUSY_MAX),
+            ),
             vol.Required(
                 CONF_OPTION_CHAT_FILES_STORAGE_MB,
                 default=options.get(CONF_OPTION_CHAT_FILES_STORAGE_MB, CONF_OPTION_CHAT_FILES_STORAGE_MB_DEFAULT),

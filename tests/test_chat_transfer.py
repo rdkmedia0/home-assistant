@@ -662,3 +662,10 @@ def test_helpers() -> None:
     assert estimate_seconds(160, "SHORT_FAST", 2) == 400
     assert estimate_seconds(160, "LONG_FAST", 0, window=4) < estimate_seconds(160, "LONG_FAST", 0)
     assert estimate_seconds(10, None, None) == estimate_seconds(10, "LONG_FAST", 0)
+
+
+async def test_the_busy_limit_is_an_option(hass: HomeAssistant, mesh: FakeMesh) -> None:
+    a, _ = await _two_gateways(hass, mesh)
+    assert a.files.busy_limit == FAST.utilization_limit
+    a.entry.options["chat"]["files_busy_percent"] = 60  # type: ignore[index]
+    assert a.files.busy_limit == 60

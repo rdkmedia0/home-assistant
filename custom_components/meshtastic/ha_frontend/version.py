@@ -2,4 +2,4 @@
 #
 # SPDX-License-Identifier: MIT
 
-VERSION = "42"
+VERSION = "43"
