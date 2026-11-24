@@ -396,7 +396,7 @@ textarea {
 .attach-send:disabled { opacity: 0.5; cursor: default; }
 
 /* file messages */
-.bubble.has-file { min-width: min(240px, 100%); }
+.bubble.has-file { width: min(320px, 100%); } /* fixed: the bubble must not follow the length of the status line */
 .file { display: flex; flex-direction: column; gap: 6px; }
 .file-image { display: block; margin: -2px -4px 2px; border-radius: 8px; overflow: hidden; line-height: 0; }
 .file-image img { display: block; max-width: 100%; max-height: 320px; height: auto; border-radius: 8px; background: var(--secondary-background-color); }
@@ -422,7 +422,7 @@ a.file-name:hover { text-decoration: underline; }
 .file-progress.offering i, .file-progress.offered i { width: 100% !important; opacity: 0.35; }
 .file-progress.failed i, .file-progress.rejected i { background: var(--error-color, #db4437); }
 .file-progress.cancelled i { opacity: 0.4; }
-.file-state { font-size: 12px; opacity: 0.85; overflow-wrap: anywhere; }
+.file-state { font-size: 12px; opacity: 0.85; overflow-wrap: anywhere; min-height: 2.6em; } /* two lines, so a note does not move the buttons */
 .file-actions { display: flex; gap: 8px; margin-top: 2px; }
 .file-button {
   padding: 5px 12px;
