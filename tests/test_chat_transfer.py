@@ -243,7 +243,8 @@ async def test_a_file_travels_between_two_gateways(hass: HomeAssistant, mesh: Fa
     assert done["status"] == FileStatus.DELIVERED, done["file"]
     assert done["file"]["chunks_done"] == 13
     assert done["file"]["error"] is None
-    assert done["file"]["estimate_seconds"] == estimate_seconds(13, "LONG_FAST", 0)
+    assert done["file"]["estimate_seconds"] == estimate_seconds(13, "LONG_FAST", 0, a.files.window)
+    assert done["file"]["seconds_per_chunk"] > 0  # measured while the chunks travelled
 
     # stop-and-wait: every chunk once, in order, each acknowledged before the next
     assert a.client.chunks_sent() == list(range(13))
@@ -516,6 +517,7 @@ async def test_websocket_file_commands(hass: HomeAssistant, mesh: FakeMesh, hass
         "preset": "LONG_FAST",
         "airtime": 2.2,
         "overhead": 1.0,
+        "gap": 1.5,
         "url": f"/api/meshtastic/chat/files/{a.entry.entry_id}",
     }
 
@@ -606,6 +608,7 @@ def test_helpers() -> None:
     assert safe_file_name("../../.hidden") == "hidden"
     assert safe_file_name("???") == "file"
     assert len(safe_file_name("x" * 100)) == 64
-    assert estimate_seconds(160, "LONG_FAST", 0) == 512
-    assert estimate_seconds(160, "SHORT_FAST", 2) == 256
+    assert estimate_seconds(160, "LONG_FAST", 0) == 1392
+    assert estimate_seconds(160, "SHORT_FAST", 2) == 400
+    assert estimate_seconds(160, "LONG_FAST", 0, window=4) < estimate_seconds(160, "LONG_FAST", 0)
     assert estimate_seconds(10, None, None) == estimate_seconds(10, "LONG_FAST", 0)

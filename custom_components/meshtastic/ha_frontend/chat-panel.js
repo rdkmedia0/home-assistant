@@ -40,6 +40,7 @@ const STATUS_ICONS = {
   rejected: { icon: "mdi:file-remove-outline", label: "Rejected" },
 };
 // what a file message is doing, for the line under the progress bar
+const IMAGE_MAX_HEIGHT = 320; // keep in step with .file-image img in chat-panel.css
 const FILE_ACTIVE = new Set(["offering", "offered", "sending", "receiving"]);
 const FILE_LABELS = {
   offering: "Waiting for the other side to accept…",
@@ -66,7 +67,10 @@ const formatTransferTime = (seconds) => {
 // how long a file takes on the gateway's preset: one chunk per round trip, each hop repeats the chunk on air
 const transferEstimate = (files, bytes, hops) => {
   const chunks = Math.max(1, Math.ceil(bytes / (files.chunk_bytes || 200)));
-  const seconds = chunks * ((files.airtime || 2.2) * (1 + (hops || 0)) + (files.overhead || 1));
+  const onAir = 1 + (hops || 0);
+  const perChunk =
+    (files.airtime || 2.2) * ((files.gap || 1.5) + onAir * (1 + 1 / Math.max(1, files.window || 1))) + (files.overhead || 1);
+  const seconds = chunks * perChunk;
   return { chunks, seconds };
 };
 const presetName = (preset) =>
@@ -1210,9 +1214,19 @@ class MeshtasticChatPanel extends HTMLElement {
     let body = "";
     if (showImage) {
       // the file view needs authentication, which a plain link or image cannot send: _signFileLinks swaps in a signed URL
+      // the thread is rebuilt on every progress update: an image that remembers its size and signed URL keeps its
+      // frame instead of collapsing and growing back
+      const size = this._imageSizes && this._imageSizes.get(file.url);
+      const signed = this._signed && this._signed.get(file.url);
+      const src = signed && signed.until > Date.now() ? ` src="${escapeHtml(signed.url)}"` : "";
+      let style = "";
+      if (size) {
+        const scale = Math.min(1, IMAGE_MAX_HEIGHT / size.h);
+        style = ` style="width:${Math.round(size.w * scale)}px;aspect-ratio:${size.w} / ${size.h}"`;
+      }
       body += `<a class="file-image" data-file-url="${escapeHtml(file.url)}" target="_blank" rel="noopener"><img data-file-src="${escapeHtml(
         file.url
-      )}" alt="${escapeHtml(file.name)}"></a>`;
+      )}"${src}${style} alt="${escapeHtml(file.name)}"></a>`;
     }
     const nameHtml = link
       ? `<a class="file-name" data-file-url="${escapeHtml(file.url)}" download="${escapeHtml(file.name)}" target="_blank" rel="noopener"><ha-icon icon="${
@@ -1226,9 +1240,10 @@ class MeshtasticChatPanel extends HTMLElement {
       let line = FILE_LABELS[m.status] || m.status;
       if ((m.status === "sending" || m.status === "receiving") && total) {
         line += ` ${sent} / ${total}`;
-        if (file.estimate_seconds && sent < total) {
-          line += ` · about ${formatTransferTime(file.estimate_seconds * (1 - sent / total))} left`;
-        }
+        // the pace measured so far beats the estimate made before the first chunk
+        const left = total - sent;
+        const seconds = file.seconds_per_chunk ? file.seconds_per_chunk * left : file.estimate_seconds * (left / total);
+        if (seconds && left > 0) line += ` · about ${formatTransferTime(seconds)} left`;
       }
       if (file.note) line += ` · ${file.note}`;
       if (file.error) line += `: ${file.error}`;
@@ -2649,9 +2664,18 @@ class MeshtasticChatPanel extends HTMLElement {
         (url) => {
           if (!el.isConnected) return;
           if (image) {
+            this._imageSizes = this._imageSizes || new Map();
+            const remember = () => {
+              if (el.naturalWidth) this._imageSizes.set(path, { w: el.naturalWidth, h: el.naturalHeight });
+            };
+            if (el.complete && el.naturalWidth && el.getAttribute("src") === url) {
+              remember(); // already drawn from the cache: nothing moves
+              return;
+            }
+            el.addEventListener("load", remember, { once: true });
             // a thumbnail that loads late makes the thread taller: stay at the bottom if that is where the user is
             if (keepAtBottom) el.addEventListener("load", () => (root.scrollTop = root.scrollHeight), { once: true });
-            el.src = url;
+            if (el.getAttribute("src") !== url) el.src = url;
           } else el.href = url;
         },
         () => {}

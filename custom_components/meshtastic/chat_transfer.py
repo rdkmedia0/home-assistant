@@ -109,6 +109,8 @@ AIRTIME_PER_PACKET = {
 }
 DEFAULT_AIRTIME = AIRTIME_PER_PACKET["LONG_FAST"]
 ROUND_TRIP_OVERHEAD = 1.0  # seconds of processing and ack airtime per chunk, for the estimate shown to the user
+CHUNK_GAP_FACTOR = 1.5  # minimum gap between chunks, in airtimes of a packet
+PACE_WEIGHT = 0.3  # how much the latest chunk counts in the measured seconds per chunk
 
 LINK_ERRORS = frozenset({"MAX_RETRANSMIT", "NO_ROUTE", "TIMEOUT", "NO_RESPONSE", "GOT_NAK"})
 
@@ -159,7 +161,7 @@ class Timing:
     link_retries: int = 5
     ack_misses: int = 5
     duty_cycle_backoff: tuple[float, ...] = (60, 120, 300, 600)
-    chunk_gap_factor: float = 1.5  # minimum gap between chunks, in airtimes of a packet
+    chunk_gap_factor: float = CHUNK_GAP_FACTOR
     utilization_limit: float = 25.0  # percent; the firmware's own modules hold back above this
     utilization_recheck: float = 10
     utilization_max_wait: float = 300
@@ -186,10 +188,14 @@ def safe_file_name(name: str) -> str:
     return (base or "file")[:NAME_MAX_BYTES]
 
 
-def estimate_seconds(chunk_count: int, preset: str | None, hops: int | None) -> int:
-    """Roughly how long a transfer takes on a preset over a number of hops, stop-and-wait, no duty cycle."""
+def estimate_seconds(chunk_count: int, preset: str | None, hops: int | None, window: int = 1) -> int:
+    """Roughly how long a transfer takes: the pause before each chunk, the chunk itself and the receiver's ACK."""
+    # every hop repeats a packet on air and one ACK covers ``window`` chunks; a busy channel, retries or a duty
+    # cycle make it longer, so the chat panel switches to the measured pace once a transfer is under way
     airtime = AIRTIME_PER_PACKET.get(preset or "", DEFAULT_AIRTIME)
-    return int(chunk_count * (airtime * (1 + (hops or 0)) + ROUND_TRIP_OVERHEAD))
+    on_air = 1 + (hops or 0)
+    per_chunk = airtime * (CHUNK_GAP_FACTOR + on_air * (1 + 1 / max(1, window))) + ROUND_TRIP_OVERHEAD
+    return round(chunk_count * per_chunk)
 
 
 def _routing_text(error: str | None) -> str:
@@ -255,6 +261,8 @@ class MeshtasticFileTransfers:
         )
         self._outgoing: dict[int, Outgoing] = {}
         self._incoming: dict[int, Incoming] = {}
+        # transfer id -> (time of the last progress, chunks done then, smoothed seconds per chunk)
+        self._chunk_pace: dict[int, tuple[float, int, float | None]] = {}
         self._unsubscribe: CALLBACK_TYPE | None = None
         self._cancel_idle_check: CALLBACK_TYPE | None = None
         self._background: set[asyncio.Task] = set()
@@ -315,6 +323,7 @@ class MeshtasticFileTransfers:
             "preset": preset,
             "airtime": AIRTIME_PER_PACKET.get(preset or "", DEFAULT_AIRTIME),
             "overhead": ROUND_TRIP_OVERHEAD,
+            "gap": CHUNK_GAP_FACTOR,
             "url": f"{CHAT_FILES_URL}/{self.entry.entry_id}",
         }
 
@@ -456,7 +465,24 @@ class MeshtasticFileTransfers:
         if status is not None:
             message["status"] = status
         message["file"].update(file_fields)
+        if message["status"] in FINAL_STATUSES:
+            self._chunk_pace.pop(transfer.transfer_id, None)
+        elif "chunks_done" in file_fields and message["status"] in (FileStatus.SENDING, FileStatus.RECEIVING):
+            self._measure_pace(transfer.transfer_id, message["file"])
         self.chat.publish_update(transfer.conversation, message)
+
+    def _measure_pace(self, transfer_id: int, file: dict[str, Any]) -> None:
+        """Record how long a chunk really takes, so the time left follows the link instead of a guess."""
+        now = time.monotonic()
+        done = int(file["chunks_done"])
+        last_time, last_done, pace = self._chunk_pace.get(transfer_id, (now, done, None))
+        if done > last_done and now > last_time:
+            sample = (now - last_time) / (done - last_done)
+            pace = sample if pace is None else PACE_WEIGHT * sample + (1 - PACE_WEIGHT) * pace
+            last_time, last_done = now, done
+        self._chunk_pace[transfer_id] = (last_time, last_done, pace)
+        if pace is not None:
+            file["seconds_per_chunk"] = round(pace, 3)
 
     def _file_message(  # noqa: PLR0913
         self,
@@ -670,7 +696,9 @@ class MeshtasticFileTransfers:
         transfer.hops = int(hops) if isinstance(hops, int) else 0
         self._update(
             transfer,
-            estimate_seconds=estimate_seconds(transfer.prepared.offer.chunk_count, transfer.preset, transfer.hops),
+            estimate_seconds=estimate_seconds(
+                transfer.prepared.offer.chunk_count, transfer.preset, transfer.hops, self.window
+            ),
         )
 
     async def _offer(self, transfer: Outgoing) -> None:
